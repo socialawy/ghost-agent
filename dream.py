@@ -62,6 +62,7 @@ RULES:
 4. Never fabricate — only consolidate what the transcript actually says.
 5. Flag low-confidence claims for verification.
 6. Compress redundancy, preserve important detail.
+7. Treat entries tagged with [confidence: unverified] as speculation. Only promote them to topic knowledge if corroborated by other transcript entries or if they are simple project metadata updates.
 """
 
 COMPACT_SYSTEM = """\
@@ -207,14 +208,33 @@ class DreamEngine:
         else:
             parts.append("(no topics yet)\n")
 
+        # Hallucination markers (ignore assistant self-talk about dreaming or daemon state)
+        EXCLUSION_MARKERS = [
+            "dream sequence initiated",
+            "daemon mode active",
+            "i'll attempt to parse",
+            "parsing transcript",
+            "you've initiated",
+            "memory engine",
+            "background process"
+        ]
+
         parts.append(f"## New Observations ({len(entries)} entries)")
         for e in entries:
-            ts = e.get("ts", "?")[:19]
             role = e.get("role", "?")
             text = e.get("content", "")
+
+            # Filter out known hallucination patterns from assistant
+            if role == "assistant" and any(m in text.lower() for m in EXCLUSION_MARKERS):
+                continue
+
+            ts = e.get("ts", "?")[:19]
+            confidence = e.get("confidence")
+            meta_str = f" [confidence: {confidence}]" if confidence else ""
+
             if len(text) > 2000:
                 text = text[:2000] + " …[truncated]"
-            parts.append(f"[{ts}] ({role}): {text}")
+            parts.append(f"[{ts}] ({role}){meta_str}: {text}")
 
         return "\n".join(parts)
 

@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 
 from llm_client import LLMClient
 from memory import Memory
@@ -41,13 +42,26 @@ logger = logging.getLogger("ghost")
 # ── Config ────────────────────────────────────────────────
 
 def load_config(path: str = "config.yaml") -> dict:
+    load_dotenv()  # Load .env if it exists
     p = Path(path)
     if not p.exists():
         logger.error("Config file not found: %s", path)
         logger.error("Copy config.yaml.example to config.yaml and fill in your API key.")
         sys.exit(1)
     with open(p, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+
+    # Environment variable overrides
+    if os.getenv("GHOST_LLM_API_KEY"):
+        config.setdefault("llm", {})["api_key"] = os.getenv("GHOST_LLM_API_KEY")
+    if os.getenv("GHOST_LLM_BASE_URL"):
+        config.setdefault("llm", {})["base_url"] = os.getenv("GHOST_LLM_BASE_URL")
+    if os.getenv("GHOST_LLM_PROVIDER"):
+        config.setdefault("llm", {})["provider"] = os.getenv("GHOST_LLM_PROVIDER")
+    if os.getenv("GHOST_LLM_MODEL"):
+        config.setdefault("llm", {})["model"] = os.getenv("GHOST_LLM_MODEL")
+
+    return config
 
 
 # ── CHAT SYSTEM PROMPT ───────────────────────────────────
@@ -67,16 +81,45 @@ Current time: {now}
 """
 
 
+# ── UI Utilities ──────────────────────────────────────────
+
+def _print_box(rows: list, title: str = None, width: int = 46):
+    """Draw a standardized ASCII box with border and title alignment."""
+    inner_w = width - 4
+    header = "╔" + "═" * (width - 2) + "╗"
+    footer = "╚" + "═" * (width - 2) + "╝"
+    sep = "╠" + "═" * (width - 2) + "╣"
+
+    print(header)
+    if title:
+        print(f"║ {title.center(width - 4)} ║")
+        print(sep)
+
+    for r in rows:
+        if r == "---":
+            print(sep)
+            continue
+        # Truncate content that exceeds width
+        content = str(r)
+        if len(content) > inner_w:
+            content = content[:inner_w - 3] + "..."
+        print(f"║ {content.ljust(inner_w)} ║")
+
+    print(footer)
+
+
 # ── Commands ──────────────────────────────────────────────
 
 def cmd_init(config: dict):
     """Initialize the .ghost/ state directory."""
     state_dir = Path(config.get("state_dir", ".ghost"))
     if state_dir.exists():
-        print(f"State directory already exists: {state_dir}")
-        print("  MEMORY.md:       ", (state_dir / "MEMORY.md").exists())
-        print("  transcript.jsonl: ", (state_dir / "transcript.jsonl").exists())
-        print("  topics/:          ", (state_dir / "topics").exists())
+        rows = [
+            f"MEMORY.md:       {str((state_dir / 'MEMORY.md').exists()):>14}",
+            f"transcript.jsonl: {str((state_dir / 'transcript.jsonl').exists()):>14}",
+            f"topics/:          {str((state_dir / 'topics').exists()):>14}"
+        ]
+        _print_box(rows, title=f"STATE ALREADY EXISTS: {state_dir.name}")
         return
 
     mem = Memory(state_dir)
@@ -85,8 +128,13 @@ def cmd_init(config: dict):
         content="Ghost Agent initialized.",
         event="init",
     )
-    print(f"✓ Initialized state directory: {state_dir.resolve()}")
-    print(f"  MEMORY.md, topics/, transcript.jsonl created.")
+    _print_box([
+        f"Path: {state_dir.resolve()}",
+        "---",
+        "✓ MEMORY.md created",
+        "✓ transcript.jsonl created",
+        "✓ topics/ directory ready"
+    ], title="INITIALIZED GHOST STATE")
 
 
 def cmd_status(config: dict):
@@ -102,26 +150,35 @@ def cmd_status(config: dict):
         except Exception:
             pass
 
-    print("╔══════════════════════════════════════╗")
-    print("║         GHOST AGENT STATUS           ║")
-    print("╠══════════════════════════════════════╣")
-    print(f"║ Topics:             {s['topic_count']:>14} ║")
+    rows = [
+        f"Topics:             {s['topic_count']:>14}",
+        "---"
+    ]
     for t in s["topics"]:
-        print(f"║   - {t:<32} ║")
-    print(f"║ Transcript entries: {s['transcript_entries']:>14} ║")
-    print(f"║ Transcript size:    {s['transcript_bytes']:>11} B  ║")
-    print(f"║ Dream cursor:       {s['dream_cursor']:>14} ║")
-    print(f"║ Undreamed entries:  {s['undreamed_entries']:>14} ║")
+        rows.append(f"  - {t}")
+    
+    rows.extend([
+        "---",
+        f"Transcript entries: {s['transcript_entries']:>14}",
+        f"Transcript size:    {s['transcript_bytes']:>11} B",
+        f"Dream cursor:       {s['dream_cursor']:>14}",
+        f"Undreamed entries:  {s['undreamed_entries']:>14}",
+        "---"
+    ])
+
     if daemon_state:
         last_tick = daemon_state.get("last_tick", "never")
         ticks = daemon_state.get("tick_count", 0)
         dreams = daemon_state.get("dream_count", 0)
-        print(f"║ Daemon last tick:   {str(last_tick)[:14]:>14} ║")
-        print(f"║ Daemon ticks:       {ticks:>14} ║")
-        print(f"║ Daemon dreams:      {dreams:>14} ║")
+        rows.extend([
+            f"Daemon last tick:   {str(last_tick)[:14]:>14}",
+            f"Daemon ticks:       {ticks:>14}",
+            f"Daemon dreams:      {dreams:>14}"
+        ])
     else:
-        print(f"║ Daemon:             {'not running':>14} ║")
-    print("╚══════════════════════════════════════╝")
+        rows.append(f"Daemon:             {'not running':>14}")
+
+    _print_box(rows, title="GHOST AGENT STATUS")
 
 
 def cmd_recall(config: dict, topic: str):
@@ -136,11 +193,33 @@ def cmd_recall(config: dict, topic: str):
         print(f"Available: {', '.join(mem.topics.list_topics()) or '(none)'}")
 
 
-def cmd_inject(config: dict, text: str):
+def cmd_inject(config: dict, text: str = "", file_path: str = None):
     """Inject a raw observation into the transcript."""
     mem = Memory(Path(config.get("state_dir", ".ghost")))
-    mem.transcript.append(role="user", content=text, event="manual_inject")
-    print(f"✓ Injected into transcript ({len(text)} chars)")
+
+    if file_path:
+        p = Path(file_path)
+        if not p.exists():
+            print(f"\033[31m✗ File not found: {p.resolve()}\033[0m")
+            return
+        content = p.read_text(encoding="utf-8")
+        source = p.name
+        print(f"Reading {p.resolve()} ({len(content)} chars)…")
+    elif text:
+        content = text
+        source = "manual"
+    else:
+        print("Nothing to inject. Use: ghost inject 'some text' or ghost inject -f path/to/file")
+        return
+
+    mem.transcript.append(
+        role="user",
+        content=content,
+        event="inject",
+        source=source,
+        confidence="verified",  # User-provided data is trusted
+    )
+    print(f"✓ Injected into transcript ({len(content)} chars, source: {source})")
 
 
 def cmd_dream(config: dict):
@@ -178,13 +257,12 @@ def cmd_chat(config: dict):
     session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     messages = []  # Running conversation for this session
 
-    print("╔══════════════════════════════════════╗")
-    print("║          GHOST AGENT CHAT            ║")
-    print("║  Type /quit to exit                  ║")
-    print("║  Type /dream to trigger dream cycle  ║")
-    print("║  Type /status for memory stats       ║")
-    print("║  Type /recall <topic> to read a topic║")
-    print("╚══════════════════════════════════════╝")
+    _print_box([
+        "Type /quit to exit",
+        "Type /dream to trigger dream cycle",
+        "Type /status for memory stats",
+        "Type /recall <topic> to read a topic"
+    ], title="GHOST AGENT CHAT")
     print()
 
     while True:
@@ -195,6 +273,18 @@ def cmd_chat(config: dict):
             break
 
         if not user_input:
+            continue
+
+        # Shell command interception
+        SHELL_PATTERNS = [
+            "python ghost.py", "python ghost", "./ghost.py", "ghost.py",
+            "git ", "ls ", "dir ", "cd ", "mkdir ", "rm ", "cp ", "mv ", "cat "
+        ]
+        if any(user_input.lower().startswith(p) for p in SHELL_PATTERNS):
+            print("\033[93m⚠️ Intercepted shell-like command.\033[0m")
+            print("  This chat loop is for interaction, not CLI execution.")
+            print("  To run Ghost Agent commands, use the actual terminal.")
+            print("  This prevents the LLM from hallucinating command execution.\n")
             continue
 
         # Slash commands
@@ -257,7 +347,7 @@ def cmd_chat(config: dict):
         messages.append({"role": "assistant", "content": response})
 
         # Log assistant response to transcript
-        mem.transcript.append(role="assistant", content=response, session=session_id)
+        mem.transcript.append(role="assistant", content=response, session=session_id, confidence="unverified")
 
         print(f"\n\033[33mghost>\033[0m {response}\n")
 
@@ -487,7 +577,13 @@ def main():
     recall_p.add_argument("topic", help="Topic slug name")
 
     inject_p = sub.add_parser("inject", help="Inject text into transcript")
-    inject_p.add_argument("text", nargs="+", help="Text to inject")
+    inject_p.add_argument("text", nargs="*", default=[], help="Text to inject")
+    inject_p.add_argument(
+        "-f", "--file",
+        type=str,
+        default=None,
+        help="Path to a file to inject (reads entire contents)",
+    )
 
     args = parser.parse_args()
 
@@ -505,7 +601,11 @@ def main():
         "status": lambda: cmd_status(config),
         "daemon": lambda: cmd_daemon(config),
         "recall": lambda: cmd_recall(config, args.topic),
-        "inject": lambda: cmd_inject(config, " ".join(args.text)),
+        "inject": lambda: cmd_inject(
+            config,
+            text=" ".join(args.text) if args.text else "",
+            file_path=args.file,
+        ),
     }
 
     dispatch[args.command]()
