@@ -8,6 +8,12 @@
 
 **Ghost Agent** is a local, lightweight, API-driven agent harness. It implements the core architectural patterns derived from the March 2026 Claude Code leak: a 3-layer persistent memory system, background "dream" consolidation, and a crash-resilient daemon.
 
+### TL;DR
+- 🎯 **Objective**: Reliable long-term persistence in complex workspaces.
+- 🧠 **Architecture**: 3-layer memory (Index → Topics → Transcript).
+- 🛡️ **Hardened**: Active shell interception and verification gates to kill hallucinations.
+- ⚡ **Zero Bloat**: No LangChain, no heavy abstractions. Just Python, `requests`, and `pyyaml`.
+
 ## Why Ghost?
 - **Zero GPU Required**: Optimized for external APIs (Groq, Anthropic, OpenAI). Works perfectly on a light machine.
 - **Zero Framework Bloat**: No LangChain, no heavy abstractions. Just Python, `requests`, and `pyyaml`.
