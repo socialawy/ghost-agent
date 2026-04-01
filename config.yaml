@@ -1,0 +1,44 @@
+# Ghost Agent Configuration
+# Copy this to config.yaml and fill in your API key.
+
+llm:
+  # Provider: "openai" (covers Groq, Together, Ollama, LM Studio, OpenAI)
+  #           "anthropic" (Claude API)
+  provider: "openai"
+  
+  # For Groq free tier:
+  base_url: "https://api.groq.com/openai/v1"
+  api_key: "gsk_YOUR_GROQ_KEY_HERE"
+  model: "llama-3.3-70b-versatile"
+  
+  # For Anthropic:
+  # provider: "anthropic"
+  # api_key: "sk-ant-YOUR_KEY"
+  # model: "claude-sonnet-4-20250514"
+  
+  # For local Ollama:
+  # provider: "openai"
+  # base_url: "http://localhost:11434/v1"
+  # api_key: "ollama"
+  # model: "llama3:70b"
+  
+  max_tokens: 4096
+  temperature: 0.3
+
+# Where your state lives
+state_dir: ".ghost"
+
+# Your workspace root (for verification gate)
+workspace_root: "E:\\co"
+
+# Dream settings
+dream:
+  min_new_entries: 5          # Minimum new transcript entries before dreaming
+  auto_interval_minutes: 30   # autoDream interval in daemon mode
+  compact_threshold: 200      # Compact transcript when entries exceed this
+
+# KAIROS daemon settings
+daemon:
+  tick_interval_seconds: 60   # How often the daemon wakes up
+  watch_paths:                # Paths to watch for changes (optional)
+    - "E:\\co\\_meta\\co-registry.csv"
