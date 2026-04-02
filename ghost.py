@@ -151,7 +151,8 @@ def cmd_init(config: dict):
         "---",
         "✓ MEMORY.md created",
         "✓ transcript.jsonl created",
-        "✓ topics/ directory ready"
+        "✓ topics/ directory ready",
+        "✓ GHOST_SPEC.md written"
     ], title="INITIALIZED GHOST STATE")
 
 
@@ -625,6 +626,33 @@ class KairosDaemon:
 
             self.state.setdefault("watch_hashes", {})[key] = current_mtime
 
+        # ── 1.1 Check linked sources for changes ────────
+        sources_file = self.state_dir / "sources.json"
+        if sources_file.exists():
+            try:
+                sources = json.loads(sources_file.read_text())
+                changed_sources = False
+                for _key, meta in sources.items():
+                    path = Path(meta["path"])
+                    if path.exists():
+                        current = path.stat().st_mtime
+                        if current > meta.get("last_seen_mtime", 0):
+                            logger.info("Source changed: %s", path.name)
+                            self.mem.transcript.append(
+                                role="system",
+                                content=f"[SOURCE CHANGED] {path.name} modified",
+                                event="source_changed",
+                                source=str(path),
+                            )
+                            # Update mtime here to prevent multiple logs before dream
+                            meta["last_seen_mtime"] = current
+                            changed_sources = True
+                
+                if changed_sources:
+                    sources_file.write_text(json.dumps(sources, indent=2))
+            except Exception:
+                pass
+
         # ── 2. autoDream if enough time has passed ────────
         last_dream_ts = self.state.get("last_dream")
         seconds_since_dream = float("inf")
@@ -693,9 +721,59 @@ def cmd_daemon(config: dict):
     daemon.run()
 
 
+def cmd_link(config: dict, path: str):
+    """Register a file as a persistent memory source."""
+    mem = Memory(Path(config.get("state_dir", ".ghost")))
+    target = Path(path).resolve()
+
+    if not target.exists():
+        print(f"\033[31m✗ File not found: {target}\033[0m")
+        return
+
+    sources_file = mem.base_dir / "sources.json"
+    sources = {}
+    if sources_file.exists():
+        try:
+            sources = json.loads(sources_file.read_text())
+        except Exception:
+            pass
+
+    key = str(target)
+    sources[key] = {
+        "path": str(target),
+        "name": target.stem,
+        "type": target.suffix.lstrip("."),
+        "linked": datetime.now(timezone.utc).isoformat(),
+        "last_seen_mtime": 0,
+        "last_read_mtime": 0,
+    }
+
+    sources_file.write_text(json.dumps(sources, indent=2))
+
+    # Log the linking, not the content
+    mem.transcript.append(
+        role="system",
+        content=f"[SOURCE LINKED] {target.name} ({target.stat().st_size} bytes) at {target}",
+        event="source_link",
+        source=str(target),
+        confidence="verified",
+    )
+
+    print(f"✓ Linked: {target.name} ({target.stat().st_size:,} bytes)")
+    print(f"  Dream engine will read this file directly during Gather phase.")
+    print(f"  Changes to the file will be detected automatically.")
+
+
+
+
 # ── Entry point ───────────────────────────────────────────
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(
         description="Ghost Agent — local persistent memory + dream + daemon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -715,6 +793,9 @@ def main():
     sub.add_parser("status", help="Show memory status")
     sub.add_parser("daemon", help="Start KAIROS always-on daemon")
     sub.add_parser("ping", help="Test LLM connectivity and pacing")
+
+    link_p = sub.add_parser("link", help="Link a file as persistent memory source")
+    link_p.add_argument("path", help="Path to file")
 
     recall_p = sub.add_parser("recall", help="Print a topic file")
     recall_p.add_argument("topic", help="Topic slug name")
@@ -750,6 +831,7 @@ def main():
             file_path=args.file,
         ),
         "ping": lambda: cmd_ping(config),
+        "link": lambda: cmd_link(config, args.path),
     }
 
     dispatch[args.command]()

@@ -226,7 +226,6 @@ class DreamEngine:
 
     def _call(self, system: str, user_content: str, json_mode: bool = True) -> dict | str:
         """Make an LLM call. Returns parsed JSON dict or raw string."""
-        import re
         try:
             raw = self.llm.chat(
                 messages=[{"role": "user", "content": user_content}],
@@ -235,40 +234,39 @@ class DreamEngine:
             )
             if not json_mode:
                 return raw
-            
-            # Robust JSON extraction
-            content = raw.strip()
-            
-            # 1. Try direct parse first (cleanest)
+
+            # Attempt 1: direct parse
             try:
-                return json.loads(content)
+                return json.loads(raw)
             except json.JSONDecodeError:
                 pass
 
-            # 2. Strip markdown fences if present
-            # Look for ```json ... ``` or ``` ... ```
-            m = re.search(r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL)
-            if m:
-                inner = m.group(1).strip()
+            # Attempt 2: strip markdown fences
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                lines = cleaned.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                cleaned = "\n".join(lines).strip()
                 try:
-                    return json.loads(inner)
+                    return json.loads(cleaned)
                 except json.JSONDecodeError:
                     pass
 
-            # 3. Last ditch: find the first { and last } in the raw string
-            # This handles preamble/postamble from non-strict chat models
-            m = re.search(r"(\{.*\})", content, re.DOTALL)
-            if m:
-                blob = m.group(1).strip()
+            # Attempt 3: extract first JSON object
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1 and end > start:
                 try:
-                    return json.loads(blob)
+                    return json.loads(cleaned[start:end + 1])
                 except json.JSONDecodeError:
                     pass
-            
-            # If everything fails, log the raw and raise descriptive error
-            logger.error("Failed to extract JSON from LLM response. Raw: %s", raw)
-            raise ValueError(f"Invalid JSON response from LLM: {raw[:200]}...")
-            
+
+            logger.error("Could not parse JSON from response:\n%s", raw[:500])
+            raise ValueError(f"Unparseable JSON: {raw[:200]}")
+
         except Exception as exc:
             if not isinstance(exc, RateLimitError):
                 logger.error("LLM call failed: %s", exc)
@@ -454,18 +452,62 @@ class DreamEngine:
 
         return self._call(GATHER_SYSTEM, prompt)
 
+    def _load_sources(self) -> dict[str, str]:
+        """Read all linked source files that have changed since last read."""
+        sources_file = self.memory.base_dir / "sources.json"
+        if not sources_file.exists():
+            return {}
+
+        try:
+            sources = json.loads(sources_file.read_text())
+        except Exception:
+            return {}
+
+        updated = {}
+        changed = False
+
+        for key, meta in sources.items():
+            path = Path(meta["path"])
+            if not path.exists():
+                logger.warning("Linked source missing: %s", path)
+                continue
+
+            current_mtime = path.stat().st_mtime
+            last_read_mtime = meta.get("last_read_mtime", 0)
+
+            if current_mtime > last_read_mtime:
+                try:
+                    content = path.read_text(encoding="utf-8", errors="replace")
+                    # Truncate very large files — give dream the first 8K
+                    if len(content) > 8000:
+                        content = content[:8000] + f"\n\n…[truncated, full file: {len(content)} chars]"
+                    updated[meta["name"]] = content
+                    meta["last_read"] = datetime.now(timezone.utc).isoformat()
+                    meta["last_read_mtime"] = current_mtime
+                    changed = True
+                    logger.info("Source updated: %s (%d chars)", meta["name"], len(content))
+                except Exception as exc:
+                    logger.warning("Failed to read source %s: %s", path, exc)
+
+        if changed:
+            sources_file.write_text(json.dumps(sources, indent=2))
+
+        return updated
+
     # ── Phase 3: Consolidate ─────────────────────────────
 
     def _phase_consolidate(self, orient: dict, gather: dict, raw_entries: list) -> dict:
-        # Load only gathered topics
+        # Load gathered topics
         gathered_content = {}
         for topic_name in gather.get("load", []):
             content = self.memory.topics.read(topic_name)
             if content:
                 gathered_content[topic_name] = content
 
+        # Load changed source files
+        source_data = self._load_sources()
+
         deltas = json.dumps(orient.get("deltas", []), indent=2)
-        raw_text = self._format_entries(raw_entries)
         current_index = self.memory.index.read()
 
         topic_section = ""
@@ -475,9 +517,19 @@ class DreamEngine:
         else:
             topic_section = "(no existing topics loaded)\n"
 
+        # Source files section
+        source_section = ""
+        if source_data:
+            source_section = "\n## Linked Source Files (authoritative — extract key data)\n"
+            for name, content in source_data.items():
+                source_section += f"\n### SOURCE: {name}\n{content}\n"
+
+        raw_section = self._format_entries(raw_entries)
+
         prompt = (
-            f"## Deltas to Consolidate\n{deltas}\n\n"
-            f"## Raw Source Entries\n{raw_text}\n\n"
+            f"## Deltas (what changed — use as a GUIDE)\n{deltas}\n\n"
+            f"## Raw Source Entries (extract EXACT data from these)\n{raw_section}\n\n"
+            f"{source_section}\n"
             f"## Current Memory Index\n{current_index}\n\n"
             f"## Loaded Topic Files\n{topic_section}\n\n"
             f"## All Existing Topics\n{', '.join(self.memory.topics.list_topics()) or '(none)'}"
@@ -485,15 +537,12 @@ class DreamEngine:
 
         result = self._call(CONSOLIDATE_SYSTEM, prompt)
 
-        # ── Verification gate ─────────────────────────────
+        # Verification gate
         verifications = result.get("verifications", [])
         if verifications:
             result["verifications"] = self._verify(verifications)
 
-        # ── Apply topic updates ───────────────────────────
         self._apply_topics(result)
-
-        # ── Rebuild index with graph ──────────────────────
         self._rebuild_index(result)
 
         return result

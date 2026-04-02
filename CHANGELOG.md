@@ -2,6 +2,12 @@
 
 ## [1.1.0] - 2026-04-02
 
+### Integration
+- **`GHOST_SPEC.md`**: Added a machine-readable memory integration contract. This tells any AI agent (Claude Code, Windsurf, Antigravity) how to safely read the `.ghost/` topics for workspace context.
+- **`ghost link` Command**: New CLI command to register external files (JSON, CSV, etc.) as **authoritative memory sources**.
+- **Daemon Source Monitor**: KAIROS now watches linked source files for `mtime` changes and logs `source_changed` events, which automatically triggers a dream cycle.
+- **Direct Source Gathering**: The dream engine reads linked sources directly from disk during consolidation, ensuring structured data is preserved even when the transcript summarization threshold is met.
+
 ### Architecture
 - **4-Phase Dream Engine**: Replaced single-pass consolidation with
   Orient → Gather → Consolidate → Prune pipeline. Each phase is a

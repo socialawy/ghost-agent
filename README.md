@@ -22,7 +22,7 @@
 - **Zero GPU Required**: Optimized for external APIs (Groq, Anthropic, OpenAI). Works perfectly on a light machine.
 - **Zero Framework Bloat**: No LangChain, no heavy abstractions. Just Python, `requests`, and `pyyaml`.
 - **File-Based State**: Your agent's memory is a directory of Markdown and JSONL files. Human-readable, grep-able, and version-controllable.
-- **Data Injection**: Seamlessly bulk-load context (like `CO_PM.json` or `BLUEPRINT.md`) into the transcript for the engine to consolidate.
+- **File-Linked Memory**: Ghost can track external source files (like `BLUEPRINT.md` or `REPORTS.csv`) without copying them, reading them only when they change.
 - **Verification Gate**: Ghost doesn't just "hallucinate" file states; it verifies claims against your filesystem before committing them to long-term memory.
 - **Anti-Hallucination Logic**: Assistant responses are tagged as `unverified` by default, forcing the engine to corroborate speculation vs. user-provided facts.
 
@@ -66,6 +66,7 @@ cp .env.example .env
 
 python ghost.py init
 python ghost.py ping              # Verify connectivity
+python ghost.py link -f path/to/file.md  # Track external source natively
 python ghost.py inject -f your-context.json
 python ghost.py dream             # 4-phase consolidation
 python ghost.py chat              # Interactive with memory

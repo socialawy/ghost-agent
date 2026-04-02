@@ -129,6 +129,44 @@ class Memory:
         self.transcript = Transcript(base_dir / "transcript.jsonl")
         self._cursor_path = base_dir / ".dream_cursor"
         self._state_path = base_dir / "dream_state.json"
+        self._write_spec()
+
+    def _write_spec(self):
+        """Write GHOST_SPEC.md — the integration contract for any AI tool reading this directory."""
+        spec = self.base_dir / "GHOST_SPEC.md"
+        if spec.exists() and spec.stat().st_size > 0:
+            return
+        spec.write_text("""\
+# Ghost Agent Memory — Integration Spec
+
+## For AI Assistants / IDEs / Agents
+
+This directory contains persistent memory for the workspace.
+Read these files to get full context on the user's projects and decisions.
+
+### Quick Start (paste into any AI chat)
+Read these files for context:
+
+.ghost/MEMORY.md (index — start here)
+.ghost/topics/*.md (detailed knowledge per topic)
+
+### File Format
+- `MEMORY.md` — Graph-indexed overview. Nodes map to topic files.
+- `topics/*.md` — One file per knowledge domain. Pure markdown.
+- `transcript.jsonl` — Raw interaction log (usually not needed).
+- `sources.json` — Linked source files the dream engine monitors.
+- `daemon.json` — KAIROS daemon state (tick count, last dream).
+
+### Writing Convention
+- Any tool can READ freely.
+- Only Ghost's dream engine WRITES to topics/ and MEMORY.md.
+- To contribute knowledge: append to `transcript.jsonl` or use `ghost inject`.
+
+### Example: Claude Code / Windsurf / Cursor Integration
+Add to your project's `.claude/instructions.md` or equivalent:
+Before starting work, read .ghost/MEMORY.md and relevant .ghost/topics/*.md
+files to understand project context and recent decisions.
+""", encoding="utf-8")
 
     # dream cursor ─────────────────────────────────────────
 
