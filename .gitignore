@@ -219,6 +219,7 @@ __marimo__/
 .ghost
 .env
 config.yaml
+local-files/
 
 # Local test infrastructure
 dummy_remote/

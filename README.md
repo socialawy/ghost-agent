@@ -28,40 +28,24 @@
 
 ---
 
-## 1. Architecture
-
-```text
-┌────────────────────────────────────────────────────────────┐
-│                     ghost CLI / daemon                     │
-│  ghost chat │ ghost dream │ ghost daemon │ ghost status    │
-└──────┬───────────┬──────────────┬──────────────────────────┘
-       │           │              │
-       ▼           ▼              ▼
-┌─────────────┐ ┌──────────┐ ┌───────────────────────────────┐
-│   Chat      │ │  Dream   │ │   KAIROS Daemon               │
-│   Loop      │ │  Engine  │ │   ┌──────────────────────┐    │
-│             │ │          │ │   │ tick loop            │    │
-│  user ←→ LLM│ │ consoli- │ │   │ file watcher         │    │
-│  + memory   │ │ date     │ │   │ autoDream on idle    │    │
-│  context    │ │ verify   │ │   │ checkpoint & resume  │    │
-│             │ │ compact  │ │   └──────────────────────┘    │
-└──────┬──────┘ └────┬─────┘ └──────────────┬────────────────┘
-       │             │                      │
-       ▼             ▼                      ▼
-┌──────────────────────────────────────────────────────────┐
-│                  3-Layer Memory                          │
-│                                                          │
-│  Layer 1: MEMORY.md          (index — always in context) │
-│  Layer 2: topics/*.md        (deep knowledge per topic)  │
-│  Layer 3: transcript.jsonl   (append-only full log)      │
-└──────────────────────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────────┐
-│              Verification Gate                           │
-│  file_exists · file_contains · registry_lookup           │
-└──────────────────────────────────────────────────────────┘
-```
+## Architecture
+ghost chat/inject ──→ transcript.jsonl (append-only log)
+│
+KAIROS daemon (tick loop)
+│
+┌──────┴──────┐
+│ autoDream   │
+│ 4 phases:   │
+│ 1. Orient      │──→ What changed?
+│ 2. Gather      │──→ Which topics to load?
+│ 3. Consolidate ──→ Merge + verify
+│ 4. Prune       │──→ Clean stale data
+└──────┬──────┘
+│
+┌────────────┼────────────┐
+▼            ▼            ▼
+MEMORY.md   topics/*.md  daemon.json
+(graph index) (knowledge) (checkpoint)
 
 ### The 3-Layer Memory System
 1.  **Index (`MEMORY.md`)**: A high-level summary of everything the agent knows. Always injected into the system prompt.
@@ -70,37 +54,30 @@
 
 ---
 
-## 2. Quick Start
+## Quick Start
 
-### Prerequisites
-- Python 3.13+
-- An API key (Groq is recommended for the free tier, but OpenAI/Anthropic work too).
+```bash
+pip install -r requirements.txt  # requests, pyyaml, python-dotenv
+cp config.yaml.example config.yaml
+cp .env.example .env
+# Edit config.yaml with your provider (Groq free tier works)
 
-### Setup
-1.  **Clone and install**:
-    ```bash
-    git clone https://github.com/your-repo/ghost-agent.git
-    cd ghost-agent
-    pip install -r requirements.txt
-    ```
-2.  **Configure**:
-    Create a `.env` file from the template:
-    ```bash
-    cp .env.example .env
-    # Edit .env and add your GHOST_LLM_API_KEY
-    ```
-3.  **Initialize**:
-    ```bash
-    python ghost.py init
-    ```
+python ghost.py init
+python ghost.py ping              # Verify connectivity
+python ghost.py inject -f your-context.json
+python ghost.py dream             # 4-phase consolidation
+python ghost.py chat              # Interactive with memory
+python ghost.py daemon            # Always-on background agent
+```
 
-### Usage
-- **Chat**: `python ghost.py chat` (Persistent, context-aware loop)
-- **Inject**: `python ghost.py inject -f path/to/file.json` (Bulk load context)
-- **Dream**: `python ghost.py dream` (Consolidate history into knowledge)
-- **Status**: `python ghost.py status` (Memory health and stats)
-- **Daemon**: `python ghost.py daemon` (KAIROS process for background autoDream)
-- **Recall**: `python ghost.py recall <topic>` (Read specific topic knowledge)
+## Provider Support
+| Provider | Cost | Rate Limits | Config |
+| :--- | :--- | :--- | :--- |
+| **Groq** | Free | 30 req/min, daily token cap | `min_interval: 3.0` |
+| **Ollama** | Free | None (local) | `min_interval: 0` |
+| **LM Studio** | Free | None (local) | `min_interval: 0` |
+| **OpenAI** | Paid | Generous | `min_interval: 0` |
+| **Anthropic** | Paid | Generous | `min_interval: 0` |
 
 ---
 
