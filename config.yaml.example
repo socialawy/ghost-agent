@@ -1,29 +1,90 @@
 # Ghost Agent Configuration
 # Copy this to config.yaml and fill in your API key.
 
+# ── Provider Presets ──────────────────────────────
+
+# OPTION A: Groq free tier (fast, rate-limited)
+# llm:
+#   provider: "openai"
+#   base_url: "https://api.groq.com/openai/v1"
+#   api_key: "${GROQ_API_KEY}"
+#   model: "llama-3.3-70b-versatile"
+#   min_interval: 3.0
+
+# OPTION B: Ollama local (free, no rate limits, needs ~8GB RAM for 7B)
+# llm:
+#   provider: "openai"
+#   base_url: "http://localhost:11434/v1"
+#   api_key: "ollama"
+#   model: "llama3.1:8b"
+#   min_interval: 0
+#   max_tokens: 4096
+
+# OPTION C: LM Studio local
+# llm:
+#   provider: "openai"
+#   base_url: "http://localhost:1234/v1"
+#   api_key: "lm-studio"
+#   model: "loaded-model-name"
+#   min_interval: 0
+
+# OPTION D: OpenAI
+# llm:
+#   provider: "openai"
+#   base_url: "https://api.openai.com/v1"
+#   api_key: "${OPENAI_API_KEY}"
+#   model: "gpt-4o-mini"
+#   min_interval: 0
+
+# OPTION E: Anthropic Claude
+# llm:
+#   provider: "anthropic"
+#   api_key: "${ANTHROPIC_API_KEY}"
+#   model: "claude-3-5-sonnet-20240620"
+#   min_interval: 0
+
+# ──────────────────────────────────────────────────
+
+# Fast model for interactive chat
 llm:
-  # Provider: "openai" (covers Groq, Together, Ollama, LM Studio, OpenAI)
-  #           "anthropic" (Claude API)
   provider: "openai"
-  
-  # For Groq free tier:
   base_url: "https://api.groq.com/openai/v1"
-  api_key: "gsk_YOUR_GROQ_KEY_HERE"
+  api_key: "${GROQ_API_KEY}"
   model: "llama-3.3-70b-versatile"
-  
-  # For Anthropic:
-  # provider: "anthropic"
-  # api_key: "sk-ant-YOUR_KEY"
-  # model: "claude-sonnet-4-20250514"
-  
-  # For local Ollama:
-  # provider: "openai"
-  # base_url: "http://localhost:11434/v1"
-  # api_key: "ollama"
-  # model: "llama3:70b"
-  
   max_tokens: 4096
   temperature: 0.3
+  min_interval: 3.0
+
+# Smarter model for dream consolidation
+# Pick whichever you have access to:
+dream_llm:
+  provider: "openai"
+  base_url: "https://api.groq.com/openai/v1"
+  api_key: "${GROQ_API_KEY}"
+  model: "deepseek-r1-distill-llama-70b"
+  max_tokens: 8192
+  temperature: 0.2
+  min_interval: 3.0
+  json_mode_supported: false  # DeepSeek R1 on Groq rejects response_format header
+
+# If you have OpenAI:
+# dream_llm:
+#   provider: "openai"
+#   base_url: "https://api.openai.com/v1"
+#   api_key: "${OPENAI_API_KEY}"
+#   model: "gpt-4o-mini"
+#   max_tokens: 8192
+#   temperature: 0.2
+#   min_interval: 0
+
+# If you have Anthropic:
+# dream_llm:
+#   provider: "anthropic"
+#   api_key: "${ANTHROPIC_API_KEY}"
+#   model: "claude-sonnet-4-20250514"
+#   max_tokens: 8192
+#   temperature: 0.2
+#   min_interval: 0
 
 # Where your state lives
 state_dir: ".ghost"
@@ -42,3 +103,13 @@ daemon:
   tick_interval_seconds: 60   # How often the daemon wakes up
   watch_paths:                # Paths to watch for changes (optional)
     - "E:\\co\\_meta\\co-registry.csv"
+
+# Optional: dedicated model for dream consolidation
+# Falls back to main llm if not specified
+# dream_llm:
+#   provider: "openai"
+#   base_url: "https://api.groq.com/openai/v1"
+#   api_key: "${GROQ_API_KEY}"
+#   model: "llama-3.3-70b-versatile"
+#   max_tokens: 8192
+#   temperature: 0.2

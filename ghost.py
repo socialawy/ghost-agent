@@ -10,6 +10,7 @@ Usage:
     python ghost.py daemon                 Start KAIROS always-on daemon
     python ghost.py recall <topic>         Print a topic file
     python ghost.py inject <text>          Add an observation directly to transcript
+    python ghost.py ping                   Test LLM connectivity and pacing
 """
 
 import argparse
@@ -51,15 +52,32 @@ def load_config(path: str = "config.yaml") -> dict:
     with open(p, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
+    # Resolve `${VAR}` placeholders in config values
+    def resolve_env_vars(data):
+        if isinstance(data, dict):
+            return {k: resolve_env_vars(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [resolve_env_vars(i) for i in data]
+        elif isinstance(data, str) and data.startswith("${") and data.endswith("}"):
+            var_name = data[2:-1]
+            return os.getenv(var_name, data)
+        return data
+
+    config = resolve_env_vars(config)
+
     # Environment variable overrides
-    if os.getenv("GHOST_LLM_API_KEY"):
-        config.setdefault("llm", {})["api_key"] = os.getenv("GHOST_LLM_API_KEY")
-    if os.getenv("GHOST_LLM_BASE_URL"):
-        config.setdefault("llm", {})["base_url"] = os.getenv("GHOST_LLM_BASE_URL")
-    if os.getenv("GHOST_LLM_PROVIDER"):
-        config.setdefault("llm", {})["provider"] = os.getenv("GHOST_LLM_PROVIDER")
-    if os.getenv("GHOST_LLM_MODEL"):
-        config.setdefault("llm", {})["model"] = os.getenv("GHOST_LLM_MODEL")
+    def apply_overrides(cfg_key, env_prefix):
+        if os.getenv(f"{env_prefix}_API_KEY"):
+            config.setdefault(cfg_key, {})["api_key"] = os.getenv(f"{env_prefix}_API_KEY")
+        if os.getenv(f"{env_prefix}_BASE_URL"):
+            config.setdefault(cfg_key, {})["base_url"] = os.getenv(f"{env_prefix}_BASE_URL")
+        if os.getenv(f"{env_prefix}_PROVIDER"):
+            config.setdefault(cfg_key, {})["provider"] = os.getenv(f"{env_prefix}_PROVIDER")
+        if os.getenv(f"{env_prefix}_MODEL"):
+            config.setdefault(cfg_key, {})["model"] = os.getenv(f"{env_prefix}_MODEL")
+
+    apply_overrides("llm", "GHOST_LLM")
+    apply_overrides("dream_llm", "GHOST_DREAM_LLM")
 
     return config
 
@@ -226,12 +244,29 @@ def cmd_dream(config: dict):
     """Run one dream consolidation cycle."""
     mem = Memory(Path(config.get("state_dir", ".ghost")))
     llm = LLMClient(config["llm"])
+    
+    # Support optional dedicated dream LLM
+    dream_llm = None
+    if "dream_llm" in config:
+        dream_llm = LLMClient(config["dream_llm"])
+    
     workspace = Path(config["workspace_root"]) if config.get("workspace_root") else None
-    engine = DreamEngine(mem, llm, workspace)
+    engine = DreamEngine(mem, llm, workspace, dream_llm=dream_llm)
 
-    print("Running dream cycle…")
+    print("Running 4-phase dream cycle…")
     result = engine.dream()
-    print(f"Result: {json.dumps(result, indent=2)}")
+    
+    status = result.get("status", "?")
+    if status == "ok":
+        print(f"\n\033[32m✓ Dream #{result['cycle']} complete\033[0m")
+        print(f"  {result.get('dream_log', '')}")
+        phases = result.get("phases", {})
+        for name, summary in phases.items():
+            print(f"  Phase [{name}]: {summary}")
+    elif status == "skipped":
+        print(f"\033[33m⊘ Skipped: {result.get('reason', '?')}\033[0m")
+    else:
+        print(f"\033[31m✗ Error: {result.get('error', '?')}\033[0m")
 
 
 def cmd_compact(config: dict):
@@ -247,12 +282,80 @@ def cmd_compact(config: dict):
     print(f"Result: {json.dumps(result, indent=2)}")
 
 
+def cmd_ping(config: dict):
+    """Test LLM connectivity and pacing for both Chat and Dream models."""
+    
+    def test_client(label, cfg):
+        if not cfg:
+            return
+        
+        llm = LLMClient(cfg)
+        pacing = cfg.get("min_interval", 0)
+
+        _print_box([
+            f"Provider:  {cfg.get('provider', 'openai')}",
+            f"Model:     {cfg.get('model', 'unknown')}",
+            f"Base URL:  {cfg.get('base_url', 'default')}",
+            f"Pacing:    {pacing}s",
+            "---",
+            "Testing Connectivity...",
+        ], title=f"LLM PING TEST: {label}")
+
+        # Call 1: Simple JSON test
+        start_1 = time.time()
+        try:
+            resp_1 = llm.chat(
+                messages=[{"role": "user", "content": "Respond with JSON: {\"status\": \"ok\"}"}],
+                system="You are a connectivity tester. Always respond in valid JSON."
+            )
+            dur_1 = time.time() - start_1
+            print(f"  [✓] Call 1 success ({dur_1:.2f}s)")
+            print(f"      Response: {resp_1}")
+        except Exception as e:
+            print(f"  [✗] Call 1 failed: {e}")
+            return
+
+        # Call 2: Pacing test
+        if pacing > 0:
+            print(f"  Testing pacing (expecting ~{pacing}s delay)...")
+            start_2 = time.time()
+            try:
+                resp_2 = llm.chat(
+                    messages=[{"role": "user", "content": "Respond with JSON: {\"status\": \"pong\"}"}],
+                    system="You are a connectivity tester."
+                )
+                dur_2 = time.time() - start_2
+                print(f"  [✓] Call 2 success ({dur_2:.2f}s)")
+                if dur_2 >= pacing:
+                    print(f"      Pacing verified: {dur_2:.2f}s >= {pacing}s")
+                else:
+                    print(f"      Pacing WARNING: {dur_2:.2f}s < {pacing}s")
+            except Exception as e:
+                print(f"  [✗] Call 2 failed: {e}")
+        print()
+
+    # Test main Chat LLM
+    test_client("CHAT", config.get("llm"))
+    
+    # Test optional Dream LLM
+    if "dream_llm" in config:
+        test_client("DREAM", config.get("dream_llm"))
+    else:
+        print("Note: Dedicated dream_llm not configured. Consolidation will use Chat LLM.\n")
+
+
 def cmd_chat(config: dict):
     """Interactive chat loop with persistent memory context."""
     mem = Memory(Path(config.get("state_dir", ".ghost")))
     llm = LLMClient(config["llm"])
+
+    # Support optional dedicated dream LLM
+    dream_llm = None
+    if "dream_llm" in config:
+        dream_llm = LLMClient(config["dream_llm"])
+
     workspace = Path(config["workspace_root"]) if config.get("workspace_root") else None
-    engine = DreamEngine(mem, llm, workspace)
+    engine = DreamEngine(mem, llm, workspace, dream_llm=dream_llm)
 
     session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     messages = []  # Running conversation for this session
@@ -261,7 +364,9 @@ def cmd_chat(config: dict):
         "Type /quit to exit",
         "Type /dream to trigger dream cycle",
         "Type /status for memory stats",
-        "Type /recall <topic> to read a topic"
+        "Type /recall <topic> to read topic",
+        "Type /verify <claim> to test logic",
+        "Type /add <text> to inject fact"
     ], title="GHOST AGENT CHAT")
     print()
 
@@ -317,6 +422,37 @@ def cmd_chat(config: dict):
             elif cmd == "/context":
                 print(mem.build_context())
                 continue
+            elif cmd == "/verify":
+                claim = parts[1].strip() if len(parts) > 1 else ""
+                if not claim:
+                    print("Usage: /verify <claim string>")
+                    continue
+                print(f"Verifying claim: {claim}...")
+                v_results = engine._verify([{"claim": claim, "check_type": "none"}])
+                # Note: This is a basic check. Actual verification uses types.
+                # Let's try to be smarter and guess check types.
+                checks = []
+                if "registry" in claim.lower() or "project" in claim.lower():
+                    checks.append({"claim": claim, "check_type": "registry"})
+                if "/" in claim or "\\" in claim or "." in claim:
+                    checks.append({"claim": claim, "check_type": "file_exists", "check_path": claim.split()[-1]})
+                
+                if not checks:
+                    checks.append({"claim": claim, "check_type": "none"})
+                
+                final_v = engine._verify(checks)
+                for res in final_v:
+                    status = "✓" if res.get("verified") else "✗"
+                    print(f"  [{status}] {res.get('check_type')}: {res.get('claim')} (conf: {res.get('confidence')})")
+                continue
+            elif cmd == "/add":
+                text = parts[1].strip() if len(parts) > 1 else ""
+                if not text:
+                    print("Usage: /add <fact text>")
+                    continue
+                mem.transcript.append(role="user", content=text, event="manual_add", confidence="high")
+                print(f"✓ Observation added with HIGH confidence.")
+                continue
             else:
                 print(f"Unknown command: {cmd}")
                 continue
@@ -368,8 +504,14 @@ class KairosDaemon:
         self.state_dir = Path(config.get("state_dir", ".ghost"))
         self.mem = Memory(self.state_dir)
         self.llm = LLMClient(config["llm"])
+        
+        # Support optional dedicated dream LLM
+        dream_llm = None
+        if "dream_llm" in config:
+            dream_llm = LLMClient(config["dream_llm"])
+
         workspace = Path(config["workspace_root"]) if config.get("workspace_root") else None
-        self.dream_engine = DreamEngine(self.mem, self.llm, workspace)
+        self.dream_engine = DreamEngine(self.mem, self.llm, workspace, dream_llm=dream_llm)
 
         self.checkpoint_path = self.state_dir / "daemon.json"
         self.running = True
@@ -572,6 +714,7 @@ def main():
     sub.add_parser("compact", help="Compact old transcript entries")
     sub.add_parser("status", help="Show memory status")
     sub.add_parser("daemon", help="Start KAIROS always-on daemon")
+    sub.add_parser("ping", help="Test LLM connectivity and pacing")
 
     recall_p = sub.add_parser("recall", help="Print a topic file")
     recall_p.add_argument("topic", help="Topic slug name")
@@ -606,6 +749,7 @@ def main():
             text=" ".join(args.text) if args.text else "",
             file_path=args.file,
         ),
+        "ping": lambda: cmd_ping(config),
     }
 
     dispatch[args.command]()

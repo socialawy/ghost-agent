@@ -128,6 +128,7 @@ class Memory:
         self.topics = TopicStore(base_dir / "topics")
         self.transcript = Transcript(base_dir / "transcript.jsonl")
         self._cursor_path = base_dir / ".dream_cursor"
+        self._state_path = base_dir / "dream_state.json"
 
     # dream cursor ─────────────────────────────────────────
 
@@ -141,6 +142,25 @@ class Memory:
 
     def set_dream_cursor(self, cursor: int):
         self._cursor_path.write_text(str(cursor))
+
+    # dream state persistence ─────────────────────────────
+
+    def get_dream_state(self) -> Optional[dict]:
+        """Load incomplete dream state if it exists."""
+        if self._state_path.exists():
+            try:
+                return json.loads(self._state_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                logger.warning("Could not load dream state: %s", exc)
+        return None
+
+    def set_dream_state(self, state: Optional[dict]):
+        """Save current dream progress or delete if finished."""
+        if state is None:
+            if self._state_path.exists():
+                self._state_path.unlink()
+        else:
+            self._state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
     # context builder ──────────────────────────────────────
 
