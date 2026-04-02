@@ -29,23 +29,25 @@
 ---
 
 ## Architecture
+```
 ghost chat/inject ──→ transcript.jsonl (append-only log)
 │
 KAIROS daemon (tick loop)
 │
-┌──────┴──────┐
-│ autoDream   │
-│ 4 phases:   │
+┌──────┴─────────┐
+│ autoDream      │
+│ 4 phases:      │
 │ 1. Orient      │──→ What changed?
 │ 2. Gather      │──→ Which topics to load?
-│ 3. Consolidate ──→ Merge + verify
+│ 3. Consolidate |──→ Merge + verify
 │ 4. Prune       │──→ Clean stale data
-└──────┬──────┘
+└──────┬─────────┘
 │
 ┌────────────┼────────────┐
 ▼            ▼            ▼
 MEMORY.md   topics/*.md  daemon.json
 (graph index) (knowledge) (checkpoint)
+```
 
 ### The 3-Layer Memory System
 1.  **Index (`MEMORY.md`)**: A high-level summary of everything the agent knows. Always injected into the system prompt.

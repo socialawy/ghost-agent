@@ -63,11 +63,6 @@ class LLMClient:
                 return self._openai(messages, system, json_mode)
             except requests.exceptions.HTTPError as exc:
                 status = exc.response.status_code if exc.response else 0
-                if status == 400:
-                    body = getattr(exc.response, "text", "(no body)")
-                    logger.error("API 400 body: %s", body)
-                    print(f"[400 detail] {body}", flush=True)
-
                 if status == 429:
                     # Parse retry-after from header or body
                     retry_after = self._parse_retry_after(exc.response)

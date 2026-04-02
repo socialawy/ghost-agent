@@ -226,21 +226,52 @@ class DreamEngine:
 
     def _call(self, system: str, user_content: str, json_mode: bool = True) -> dict | str:
         """Make an LLM call. Returns parsed JSON dict or raw string."""
+        import re
         try:
             raw = self.llm.chat(
                 messages=[{"role": "user", "content": user_content}],
                 system=system,
                 json_mode=json_mode,
             )
-            if json_mode:
+            if not json_mode:
+                return raw
+            
+            # Robust JSON extraction
+            content = raw.strip()
+            
+            # 1. Try direct parse first (cleanest)
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                pass
+
+            # 2. Strip markdown fences if present
+            # Look for ```json ... ``` or ``` ... ```
+            m = re.search(r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL)
+            if m:
+                inner = m.group(1).strip()
                 try:
-                    return json.loads(raw)
+                    return json.loads(inner)
                 except json.JSONDecodeError:
-                    cleaned = raw.strip().removeprefix("```json").removesuffix("```").strip()
-                    return json.loads(cleaned)
-            return raw
+                    pass
+
+            # 3. Last ditch: find the first { and last } in the raw string
+            # This handles preamble/postamble from non-strict chat models
+            m = re.search(r"(\{.*\})", content, re.DOTALL)
+            if m:
+                blob = m.group(1).strip()
+                try:
+                    return json.loads(blob)
+                except json.JSONDecodeError:
+                    pass
+            
+            # If everything fails, log the raw and raise descriptive error
+            logger.error("Failed to extract JSON from LLM response. Raw: %s", raw)
+            raise ValueError(f"Invalid JSON response from LLM: {raw[:200]}...")
+            
         except Exception as exc:
-            logger.error("LLM call failed: %s", exc)
+            if not isinstance(exc, RateLimitError):
+                logger.error("LLM call failed: %s", exc)
             raise
 
     # ── Trigger conditions ────────────────────────────────
