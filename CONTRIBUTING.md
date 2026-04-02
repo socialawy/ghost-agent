@@ -1,26 +1,28 @@
-# Contributing to Ghost Agent
+# Contributing to Ghost
 
-We welcome contributions! Ghost is a community-driven, clean-room implementation of advanced agentic architecture.
+We welcome contributions! Ghost is building a **Shared Memory Standard** for AI agents. Our goal is to move knowledge out of proprietary APIs and into the local filesystem.
+
+## Our Philosophy
+- **Unix Philosophy**: Everything is a file. The `.ghost/` directory is the API.
+- **Active Synthesis**: We don't just "store" data; we consolidate and verify it.
+- **Zero Bloat**: No LangChain, no heavy abstractions. Just pure Python and structured Markdown.
 
 ## How to Contribute
-1.  **Bug Reports**: If you find a crash or a memory corruption issue, please open a GitHub issue.
-2.  **Feature Requests**: Want to add a new verification gate or a bridge for a specific IDE? Open a discussion or an issue.
-3.  **Pull Requests**:
-    -   Keep it lightweight. Ghost's philosophy is "Minimal framework, maximum logic."
-    -   Ensure any new features are file-based and daemon-aware.
-    -   Don't add large dependencies unless absolutely necessary.
+1.  **Imrove Synthesis**: Enhance `DreamEngine` in `dream.py` to better reconcile conflicting information.
+2.  **Add Verification Gates**: Write new `verify()` methods to check facts against the filesystem.
+3.  **Bridge Tools**: Create integrations or specs for new IDEs and agents using the [GHOST_SPEC.md](.ghost/GHOST_SPEC.md).
 
 ## Development Checklist
--   **Add tools**: Modify `DreamEngine` in `dream.py` to add new `verify()` capabilities.
--   **Improve Memory**: Extend `Memory` in `memory.py` for advanced retrieval (e.g., embeddings).
--   **Daemon Features**: Update `KairosDaemon` in `ghost.py` for more sophisticated file matching or webhook integration.
+-   **File-Based Only**: Any new feature must store its state in the `.ghost/` directory.
+-   **Async Synthesis**: Ensure new logic is compatible with the background `KAIROS` daemon.
+-   **Performance**: Keep the memory footprint minimal. Ghost should run on a toaster.
 
 ## Style Guide
 -   Follow PEP 8.
+-   Use descriptive, slug-friendly names for topic files.
 -   Keep functions focused and modular.
--   Use descriptive names for topic slugs.
 
 ---
 
 ### Recognition
-Contributors to Ghost Agent are part of a clean-room effort to democratize high-performance agent harnesses. Thank you for your help.
+Contributors to Ghost are part of an effort to democratize high-performance agent memory. Thank you for your support.

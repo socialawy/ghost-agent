@@ -1,8 +1,8 @@
 # Local Safeguard: Private Context Hook
 
-Ghost Agent is designed to be a "Second Brain," and sometimes the most valuable research (blueprints, leaked source analysis, or project maps) is too personal or sensitive to be pushed to a public remote like GitHub.
+Ghost is a **Shared Memory Filesystem**, and often the most valuable synthesized knowledge (blueprints, project maps, or private registries) is too sensitive for public remotes.
 
-To enable **Local-Only Tracking** for the `local-files/` directory, we have implemented a Git safeguard.
+To enable **Local-Only Tracking** for the `local-files/` and `.ghost/` directories, we use a Git safeguard to ensure your private "second brain" stays on your machine.
 
 ## How it Works
 
@@ -10,18 +10,19 @@ We use a Git `pre-push` hook located at `.git/hooks/pre-push`.
 
 Every time you run `git push`, this script:
 1.  Scans the commits you are about to push.
-2.  Checks for any file modifications inside the `local-files/` directory.
+2.  Checks for any modifications inside the `local-files/` directory.
 3.  If detected, the **Push is ABORTED** and a warning is displayed.
 
 ## Why this is useful
--   **Local Versioning**: You can `git commit` changes to `BLUEPRINT.md` or `CO_PM.json` locally. This gives you undo/redo support and a history of your thoughts.
--   **Safety**: You don't have to worry about `git add .` or `git commit -a` accidentally leaking your private blueprints to the remote.
+-   **Local Synthesis**: You can commit changes to `BLUEPRINT.md` or `CO_PM.json` locally, giving you full undo/redo support and a persistent history of your thoughts.
+-   **Safety**: Even if you `git add .` or `git commit -a`, the safeguard prevents you from accidentally leaking your private knowledge to the remote.
+-   **Standardized Separation**: By keeping `.ghost/` and `local-files/` separate from the core logic, we maintain a clean boundary between the "standard" and your specific "context".
 
 ## How to Bypass (Use Caution!)
-If you **intentionally** want to push these files to the remote, you can skip the check using the `--no-verify` flag:
+If you **intentionally** want to push these files to the remote, you can skip the check:
 ```bash
 git push --no-verify
 ```
 
 > [!CAUTION]
-> This hook only exists on your local machine. If you clone this repository to another machine, you must recreate the hook (`.git/hooks/pre-push`) to maintain the safeguard.
+> This hook is local to your machine. If you clone this repository elsewhere, you must recreate the hook (`.git/hooks/pre-push`) to maintain the safeguard.

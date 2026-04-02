@@ -216,7 +216,8 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Local files/folders
-.ghost
+.ghost/*
+!.ghost/GHOST_SPEC.md
 .env
 config.yaml
 local-files/

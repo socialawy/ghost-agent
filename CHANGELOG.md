@@ -2,6 +2,11 @@
 
 ## [1.1.0] - 2026-04-02
 
+### Identity & Standards
+- **Pivot: Shared Memory Filesystem**: Rebranded Ghost from an "agent harness" to a **Shared Memory Filesystem** standard. The focus is now on the `.ghost/` directory as a universal, file-based API for any AI tool.
+- **The Anti-API Advantage**: Formalized the concept of using the filesystem as the interface, eliminating the need for proprietary SDKs and ensuring infinite integration with tools like Claude Code, Cursor, and Windsurf.
+- **Hippocampus Model**: Shifted architectural focus from passive retrieval to **Active Synthesis** via the Dream Engine, which distills raw interaction logs into authoritative knowledge.
+
 ### Integration
 - **`GHOST_SPEC.md`**: Added a machine-readable memory integration contract. This tells any AI agent (Claude Code, Windsurf, Antigravity) how to safely read the `.ghost/` topics for workspace context.
 - **`ghost link` Command**: New CLI command to register external files (JSON, CSV, etc.) as **authoritative memory sources**.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ghost Agent — local memory/dream/daemon system.
+"""Ghost — Shared Memory Filesystem for AI Agents.
 
 Usage:
     python ghost.py init                   Initialize .ghost/ state directory
@@ -197,7 +197,7 @@ def cmd_status(config: dict):
     else:
         rows.append(f"Daemon:             {'not running':>14}")
 
-    _print_box(rows, title="GHOST AGENT STATUS")
+    _print_box(rows, title="GHOST — SHARED MEMORY FILESYSTEM")
 
 
 def cmd_recall(config: dict, topic: str):
@@ -368,7 +368,7 @@ def cmd_chat(config: dict):
         "Type /recall <topic> to read topic",
         "Type /verify <claim> to test logic",
         "Type /add <text> to inject fact"
-    ], title="GHOST AGENT CHAT")
+    ], title="GHOST — INTERACTIVE SESSION")
     print()
 
     while True:
@@ -775,7 +775,7 @@ def main():
         sys.stderr.reconfigure(encoding="utf-8")
 
     parser = argparse.ArgumentParser(
-        description="Ghost Agent — local persistent memory + dream + daemon",
+        description="Ghost — Shared Memory Filesystem (local memory + synthesis)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

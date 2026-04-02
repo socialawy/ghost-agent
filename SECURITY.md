@@ -1,14 +1,14 @@
 # Security Policy
 
-## API Keys
-Ghost Agent calls external LLM APIs. Your keys live in `.env` (never committed).
-The `.ghost/` state directory may contain conversation content — treat it like 
-a diary. Don't push it to public repos.
+## Persistence & Privacy
+Ghost is a **Shared Memory Filesystem**. Your data lives locally on your disk.
+- **API Keys**: Keys reside in your `.env` file and are never committed or logged.
+- **State Directory**: The `.ghost/` directory contains your project's synthesized knowledge and interaction history. Treat it like a secure diary; **do not push it to public repositories.**
 
 ## Filesystem Access
-The verification gate performs **read-only** access to your workspace.
-Ghost never writes outside `.ghost/` unless you explicitly extend it.
-The daemon watches files by mtime only — no content is read during watch ticks.
+- **Verification Gate**: Performs **read-only** access to your workspace to verify memory claims against the truth of your code.
+- **Memory Boundary**: Ghost never writes outside the `.ghost/` directory.
+- **Daemon Monitoring**: The KAIROS daemon monitors file `mtime` only. Content is only read during the "Gather" phase of the Dream Engine if a file has changed.
 
 ## Reporting
-Open a GitHub issue or email [EMAIL_ADDRESS] for security concerns.
+Please report security concerns via a GitHub Issue or private email.
