@@ -218,5 +218,8 @@ __marimo__/
 # Local files/folders
 .ghost
 .env
-local-files/
 config.yaml
+
+# Local test infrastructure
+dummy_remote/
+debug_env.py

@@ -1,4 +1,8 @@
-# Ghost Agent
+# Ghost Agent 👻
+> **TL;DR:** A persistent, clean-room memory harness inspired by the [March 2026 Claude Code leaks](local-files/BLUEPRINT.md). It turns your LLM from a stateful chat into a long-context, self-maintaining agent that never forgets your project's scale.
+
+> [!IMPORTANT]
+> **This is not just another wrapper.** Ghost implements a 3-layer memory architecture (Index → Topics → Transcript) and an autonomous **Dream Engine** that consolidates, verifies, and prunes context while you sleep.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
