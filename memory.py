@@ -125,6 +125,52 @@ class TopicStore:
     def read_all(self) -> dict[str, str]:
         return {t: self.read(t) for t in self.list_topics()}
 
+    def snapshot(self, cycle: int, topics: list[str] | None = None):
+        """Save copies of topic files to dream_history/cycle_N/ for diffing."""
+        history_dir = self.directory.parent / "dream_history" / f"cycle_{cycle}"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        targets = topics if topics else self.list_topics()
+        for t in targets:
+            content = self.read(t)
+            if content:
+                (history_dir / f"{t}.md").write_text(content, encoding="utf-8")
+
+    def get_snapshot(self, cycle: int) -> dict[str, str]:
+        """Read a saved snapshot for a given cycle."""
+        history_dir = self.directory.parent / "dream_history" / f"cycle_{cycle}"
+        if not history_dir.exists():
+            return {}
+        return {
+            f.stem: f.read_text(encoding="utf-8")
+            for f in sorted(history_dir.glob("*.md"))
+        }
+
+    def list_snapshots(self) -> list[int]:
+        """Return sorted list of available snapshot cycle numbers."""
+        history_dir = self.directory.parent / "dream_history"
+        if not history_dir.exists():
+            return []
+        cycles = []
+        for d in history_dir.iterdir():
+            if d.is_dir() and d.name.startswith("cycle_"):
+                try:
+                    cycles.append(int(d.name.split("_", 1)[1]))
+                except ValueError:
+                    pass
+        return sorted(cycles)
+
+    def prune_snapshots(self, keep: int = 5):
+        """Remove old snapshots, keeping the most recent N."""
+        cycles = self.list_snapshots()
+        if len(cycles) <= keep:
+            return
+        history_dir = self.directory.parent / "dream_history"
+        for c in cycles[:-keep]:
+            import shutil
+            snap_dir = history_dir / f"cycle_{c}"
+            if snap_dir.exists():
+                shutil.rmtree(snap_dir)
+
 
 # ── Layer 1: Memory index ────────────────────────────────
 

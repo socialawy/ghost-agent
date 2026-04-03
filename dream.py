@@ -357,6 +357,9 @@ class DreamEngine:
         logger.info("Dream: processing %d entries (cursor %d -> %d)", 
                     len(new_entries), cursor, new_cursor)
 
+        # Snapshot pre-dream state for quality scoring and diff
+        pre_dream_topics = self.memory.topics.read_all()
+
         try:
             # ── PHASE 1: ORIENT ──────────────────────────
             if "orient" not in state["phases"]:
@@ -408,6 +411,19 @@ class DreamEngine:
             else:
                 prune = state["phases"]["prune"]
 
+            # ── PHASE 4.5: QUALITY SCORING ──────────────
+            if "quality" not in state["phases"]:
+                post_dream_topics = self.memory.topics.read_all()
+                quality = self._score_quality(pre_dream_topics, post_dream_topics)
+                state["phases"]["quality"] = quality
+                if quality.get("warnings"):
+                    self.memory.set_dream_state(state)
+
+            # ── PHASE 4.6: CROSS-LINK GRAPH ─────────────
+            if "cross_link" not in state["phases"]:
+                cross_edges = self._cross_link_graph()
+                state["phases"]["cross_link"] = {"edges_added": len(cross_edges), "edges": cross_edges}
+
         except RateLimitError as exc:
             logger.warning("Dream paused due to rate limits: %s", exc)
             return {
@@ -424,6 +440,12 @@ class DreamEngine:
         self.memory.set_dream_cursor(new_cursor)
         self._cycle += 1
 
+        # Snapshot for diff (before clearing state)
+        modified_topics = [u.get("topic") for u in consolidate.get("topic_updates", []) if u.get("topic")]
+        if modified_topics:
+            self.memory.topics.snapshot(self._cycle, modified_topics)
+            self.memory.topics.prune_snapshots(keep=5)
+
         dream_log = consolidate.get("consolidate_log", "cycle complete")
         self.memory.transcript.append(
             role="system",
@@ -434,11 +456,13 @@ class DreamEngine:
         # Clear state on success
         self.memory.set_dream_state(None)
 
-        logger.info("Dream #%d complete: %s", self._cycle, dream_log)
+        quality = state["phases"].get("quality", {})
+        logger.info("Dream #%d complete: %s (quality: %s)", self._cycle, dream_log, quality.get("verdict", "n/a"))
         return {
             "status": "ok",
             "cycle": self._cycle,
             "dream_log": dream_log,
+            "quality": quality,
             "phases": {k: _summarize_phase(v) for k, v in state["phases"].items()},
         }
 
@@ -668,6 +692,151 @@ class DreamEngine:
                 logger.info("Demoted claim in %s: %s", topic, claim)
 
         return result
+
+    # ── Quality Scoring ──────────────────────────────────
+
+    @staticmethod
+    def _extract_key_terms(text: str) -> set[str]:
+        """Extract significant terms: numbers, proper nouns, file paths."""
+        import re
+        terms = set()
+        # Numbers (with optional commas): 107, 1,234, 865+
+        terms.update(re.findall(r'\b\d[\d,]*\+?\b', text))
+        # CamelCase / proper nouns (2+ chars starting with uppercase)
+        terms.update(re.findall(r'\b[A-Z][a-z]+(?:[A-Z][a-z]+)+\b', text))
+        # Capitalized words (likely names)
+        terms.update(w for w in re.findall(r'\b[A-Z][a-z]{2,}\b', text))
+        # File paths (Windows or Unix)
+        terms.update(re.findall(r'[A-Za-z]:\\[^\s,]+|/[a-z][\w/.-]+', text))
+        # Slugs that look like topic/project names
+        terms.update(re.findall(r'\b[a-z][\w]+-[\w-]+\b', text))
+        return terms
+
+    def _score_quality(self, before: dict[str, str], after: dict[str, str]) -> dict:
+        """Compare topic state before and after consolidation."""
+        warnings = []
+        scores = {}
+
+        all_topics = set(before.keys()) | set(after.keys())
+        for topic in all_topics:
+            old = before.get(topic, "")
+            new = after.get(topic, "")
+
+            if not old and new:
+                scores[topic] = {"action": "created", "length": len(new)}
+                continue
+            if old and not new:
+                warnings.append(f"Topic '{topic}' was deleted ({len(old)} chars lost)")
+                scores[topic] = {"action": "deleted", "length_lost": len(old)}
+                continue
+
+            # Length delta
+            length_ratio = len(new) / max(len(old), 1)
+            if length_ratio < 0.7:
+                warnings.append(f"Topic '{topic}' shrank by {(1 - length_ratio) * 100:.0f}% ({len(old)} -> {len(new)})")
+
+            # Key term preservation
+            old_terms = self._extract_key_terms(old)
+            new_terms = self._extract_key_terms(new)
+            if old_terms:
+                preserved = old_terms & new_terms
+                preservation_rate = len(preserved) / len(old_terms)
+                lost_terms = old_terms - new_terms
+                if preservation_rate < 0.8 and lost_terms:
+                    warnings.append(f"Topic '{topic}' lost terms: {', '.join(list(lost_terms)[:5])}")
+            else:
+                preservation_rate = 1.0
+                lost_terms = set()
+
+            scores[topic] = {
+                "action": "updated",
+                "length_before": len(old),
+                "length_after": len(new),
+                "length_ratio": round(length_ratio, 2),
+                "term_preservation": round(preservation_rate, 2),
+                "terms_lost": list(lost_terms)[:10],
+            }
+
+        verdict = "clean" if not warnings else "degraded"
+        logger.info("Quality score: %s (%d warnings)", verdict, len(warnings))
+        for w in warnings:
+            logger.warning("Quality: %s", w)
+
+        return {"verdict": verdict, "warnings": warnings, "scores": scores}
+
+    # ── Cross-Project Graph Edges ────────────────────────
+
+    def _cross_link_graph(self) -> list[dict]:
+        """Detect cross-topic relationships via term co-occurrence.
+        Returns list of new edges added to the index."""
+        topics = self.memory.topics.read_all()
+        if len(topics) < 2:
+            return []
+
+        # Extract significant terms per topic (lowercase for matching)
+        import re
+        topic_terms = {}
+        for name, content in topics.items():
+            words = set(w.lower() for w in re.findall(r'\b[A-Za-z][\w-]{3,}\b', content))
+            # Filter out very common words
+            stopwords = {"this", "that", "with", "from", "have", "will", "been", "also",
+                         "more", "when", "only", "some", "than", "into", "each", "most",
+                         "they", "their", "about", "which", "would", "could", "should",
+                         "other", "first", "after", "before", "these", "those", "being",
+                         "content", "topic", "updated", "current", "status", "active"}
+            topic_terms[name] = words - stopwords
+
+        # Read current index to find existing edges
+        index_content = self.memory.index.read()
+        existing_edges = set()
+        for line in index_content.splitlines():
+            if "--" in line and "-->" in line:
+                parts = line.strip("- ").split("--")
+                if len(parts) >= 2:
+                    src = parts[0].strip()
+                    existing_edges.add(src)
+
+        # Compare pairs
+        new_edges = []
+        topic_names = sorted(topics.keys())
+        for i, t1 in enumerate(topic_names):
+            for t2 in topic_names[i + 1:]:
+                shared = topic_terms[t1] & topic_terms[t2]
+                # Remove generic terms that appear in most topics
+                significant = {w for w in shared if len(w) > 4}
+                if len(significant) >= 3:
+                    # Check if edge already exists in index
+                    edge_marker = f"{t1} --"
+                    reverse_marker = f"{t2} --"
+                    if edge_marker not in index_content or t2 not in index_content.split(edge_marker)[-1].split("\n")[0]:
+                        relation = f"shares terms: {', '.join(list(significant)[:4])}"
+                        new_edges.append({"from": t1, "to": t2, "relation": relation})
+
+        if new_edges:
+            # Append edges to MEMORY.md
+            lines = index_content.rstrip().split("\n")
+            # Find or create Edges section
+            edge_idx = None
+            for idx, line in enumerate(lines):
+                if line.strip() == "### Edges":
+                    edge_idx = idx
+                    break
+
+            if edge_idx is None:
+                lines.append("")
+                lines.append("### Edges")
+                edge_idx = len(lines) - 1
+
+            for edge in new_edges:
+                edge_line = f"- {edge['from']} --{edge['relation']}--> {edge['to']}"
+                if edge_line not in index_content:
+                    lines.insert(edge_idx + 1, edge_line)
+                    edge_idx += 1
+
+            self.memory.index.write("\n".join(lines))
+            logger.info("Cross-linked %d new edges", len(new_edges))
+
+        return new_edges
 
     # ── Topic Splitting ───────────────────────────────────
 

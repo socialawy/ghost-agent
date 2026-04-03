@@ -268,9 +268,19 @@ def cmd_dream(config: dict):
     if status == "ok":
         print(f"\n\033[32m✓ Dream #{result['cycle']} complete\033[0m")
         print(f"  {result.get('dream_log', '')}")
+        quality = result.get("quality", {})
+        verdict = quality.get("verdict", "n/a")
+        color = "\033[32m" if verdict == "clean" else "\033[33m"
+        print(f"  Quality: {color}{verdict}\033[0m")
+        for w in quality.get("warnings", []):
+            print(f"    \033[33m⚠ {w}\033[0m")
         phases = result.get("phases", {})
         for name, summary in phases.items():
-            print(f"  Phase [{name}]: {summary}")
+            if name not in ("quality", "cross_link"):
+                print(f"  Phase [{name}]: {summary}")
+        cross = phases.get("cross_link", {})
+        if cross.get("edges_added", 0) > 0:
+            print(f"  Cross-linked: {cross['edges_added']} new edges")
     elif status == "skipped":
         print(f"\033[33m⊘ Skipped: {result.get('reason', '?')}\033[0m")
     else:
@@ -288,6 +298,63 @@ def cmd_compact(config: dict):
     print(f"Running compaction (keep recent {threshold // 2})…")
     result = engine.compact(keep_recent=threshold // 2)
     print(f"Result: {json.dumps(result, indent=2)}")
+
+
+def cmd_diff(config: dict, cycle: int = None):
+    """Show what changed between dream cycles."""
+    import difflib
+
+    mem = Memory(Path(config.get("state_dir", ".ghost")))
+    available = mem.topics.list_snapshots()
+
+    if not available:
+        print("No dream snapshots available yet. Run a dream cycle first.")
+        return
+
+    if cycle is not None and cycle not in available:
+        print(f"Snapshot for cycle {cycle} not found. Available: {available}")
+        return
+
+    target_cycle = cycle if cycle is not None else available[-1]
+    snapshot = mem.topics.get_snapshot(target_cycle)
+
+    if not snapshot:
+        print(f"Snapshot for cycle {target_cycle} is empty.")
+        return
+
+    current = mem.topics.read_all()
+
+    print(f"╔══════════════════════════════════════════╗")
+    print(f"║  DREAM DIFF — Cycle #{target_cycle:<20} ║")
+    print(f"╚══════════════════════════════════════════╝")
+
+    any_diff = False
+    all_topics = sorted(set(snapshot.keys()) | set(current.keys()))
+    for topic in all_topics:
+        old = snapshot.get(topic, "")
+        new = current.get(topic, "")
+        if old == new:
+            continue
+
+        any_diff = True
+        old_lines = old.splitlines(keepends=True)
+        new_lines = new.splitlines(keepends=True)
+        diff = difflib.unified_diff(
+            old_lines, new_lines,
+            fromfile=f"cycle_{target_cycle}/{topic}.md",
+            tofile=f"current/{topic}.md",
+        )
+        for line in diff:
+            if line.startswith("+") and not line.startswith("+++"):
+                print(f"\033[32m{line}\033[0m", end="")
+            elif line.startswith("-") and not line.startswith("---"):
+                print(f"\033[31m{line}\033[0m", end="")
+            else:
+                print(line, end="")
+        print()
+
+    if not any_diff:
+        print("No changes since snapshot.")
 
 
 def cmd_ping(config: dict):
@@ -897,6 +964,9 @@ def main():
 
     sub.add_parser("sources", help="List all linked source files")
 
+    diff_p = sub.add_parser("diff", help="Show changes from last dream cycle")
+    diff_p.add_argument("--cycle", type=int, default=None, help="Specific cycle to diff against")
+
     recall_p = sub.add_parser("recall", help="Print a topic file")
     recall_p.add_argument("topic", help="Topic slug name")
 
@@ -934,6 +1004,7 @@ def main():
         "link": lambda: cmd_link(config, args.path),
         "unlink": lambda: cmd_unlink(config, args.path),
         "sources": lambda: cmd_sources(config),
+        "diff": lambda: cmd_diff(config, args.cycle),
     }
 
     dispatch[args.command]()

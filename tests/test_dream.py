@@ -273,3 +273,106 @@ class TestDreamCycle:
         assert result["status"] == "ok"
         # Orient cached + Gather skipped = only consolidate + prune
         assert mock_call.call_count == 2
+
+
+class TestQualityScoring:
+    def test_clean_when_no_change(self, engine):
+        before = {"topic-a": "# Topic A\n107 projects"}
+        after = {"topic-a": "# Topic A\n107 projects"}
+        result = engine._score_quality(before, after)
+        assert result["verdict"] == "clean"
+        assert result["warnings"] == []
+
+    def test_warns_on_shrink(self, engine):
+        before = {"topic-a": "x" * 1000}
+        after = {"topic-a": "x" * 500}
+        result = engine._score_quality(before, after)
+        assert result["verdict"] == "degraded"
+        assert any("shrank" in w for w in result["warnings"])
+
+    def test_warns_on_deleted_topic(self, engine):
+        before = {"topic-a": "content here"}
+        after = {}
+        result = engine._score_quality(before, after)
+        assert any("deleted" in w for w in result["warnings"])
+
+    def test_tracks_created_topic(self, engine):
+        before = {}
+        after = {"new-topic": "# New\nFresh content"}
+        result = engine._score_quality(before, after)
+        assert result["verdict"] == "clean"
+        assert result["scores"]["new-topic"]["action"] == "created"
+
+    def test_warns_on_lost_terms(self, engine):
+        before = {"t": "GRID project has 865 tests on GitHub"}
+        after = {"t": "Project has tests"}
+        result = engine._score_quality(before, after)
+        assert result["scores"]["t"]["terms_lost"]
+
+    def test_extract_key_terms(self, engine):
+        text = "Grid has 865 tests, parallaxin uses GitHub Pages at E:\\co\\GRID"
+        terms = engine._extract_key_terms(text)
+        assert "865" in terms
+        assert "Grid" in terms  # Capitalized word
+        assert "GitHub" in terms  # CamelCase
+        assert "E:\\co\\GRID" in terms  # File path
+
+
+class TestCrossLinkGraph:
+    def test_no_links_with_one_topic(self, engine):
+        engine.memory.topics.write("only-one", "# Single topic\nSome content here")
+        result = engine._cross_link_graph()
+        assert result == []
+
+    def test_links_topics_with_shared_terms(self, engine):
+        engine.memory.topics.write("project-a", "# Project Alpha\nUses GitHub Actions for testing with pytest framework and Docker containers")
+        engine.memory.topics.write("project-b", "# Project Beta\nDeployed via GitHub Actions with Docker containers and pytest validation")
+        result = engine._cross_link_graph()
+        assert len(result) >= 1
+        assert result[0]["from"] == "project-a"
+        assert result[0]["to"] == "project-b"
+
+    def test_no_links_for_unrelated_topics(self, engine):
+        engine.memory.topics.write("cooking", "# Recipes\nPasta carbonara with eggs and cheese")
+        engine.memory.topics.write("physics", "# Quantum\nEntanglement and superposition states")
+        result = engine._cross_link_graph()
+        assert result == []
+
+
+class TestSnapshot:
+    def test_snapshot_and_read(self, engine):
+        engine.memory.topics.write("alpha", "content alpha")
+        engine.memory.topics.write("beta", "content beta")
+        engine.memory.topics.snapshot(1)
+
+        snap = engine.memory.topics.get_snapshot(1)
+        assert snap == {"alpha": "content alpha", "beta": "content beta"}
+
+    def test_snapshot_specific_topics(self, engine):
+        engine.memory.topics.write("alpha", "content alpha")
+        engine.memory.topics.write("beta", "content beta")
+        engine.memory.topics.snapshot(1, topics=["alpha"])
+
+        snap = engine.memory.topics.get_snapshot(1)
+        assert "alpha" in snap
+        assert "beta" not in snap
+
+    def test_list_snapshots(self, engine):
+        engine.memory.topics.write("t", "content")
+        engine.memory.topics.snapshot(3)
+        engine.memory.topics.snapshot(5)
+        engine.memory.topics.snapshot(1)
+
+        assert engine.memory.topics.list_snapshots() == [1, 3, 5]
+
+    def test_prune_snapshots(self, engine):
+        engine.memory.topics.write("t", "content")
+        for i in range(7):
+            engine.memory.topics.snapshot(i)
+
+        engine.memory.topics.prune_snapshots(keep=3)
+        remaining = engine.memory.topics.list_snapshots()
+        assert remaining == [4, 5, 6]
+
+    def test_get_nonexistent_snapshot(self, engine):
+        assert engine.memory.topics.get_snapshot(999) == {}
