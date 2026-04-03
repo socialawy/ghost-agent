@@ -326,3 +326,85 @@ files to understand project context and recent decisions.
             "dream_cursor": cursor,
             "undreamed_entries": len(undreamed),
         }
+
+
+# ── Multi-Workspace Master Index ────────────────────────
+
+class MasterIndex:
+    """Cross-workspace registry at ~/.ghost/master.json."""
+
+    def __init__(self, path: Path = None):
+        if path is None:
+            path = Path.home() / ".ghost" / "master.json"
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _load(self) -> dict:
+        if self.path.exists():
+            try:
+                return json.loads(self.path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {"workspaces": {}}
+
+    def _save(self, data: dict):
+        self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def register(self, name: str, ghost_dir: Path):
+        """Register a workspace in the master index."""
+        data = self._load()
+        mem = Memory(ghost_dir) if ghost_dir.exists() else None
+        data["workspaces"][name] = {
+            "path": str(ghost_dir),
+            "registered": datetime.now(timezone.utc).isoformat(),
+            "topic_count": len(mem.topics.list_topics()) if mem else 0,
+        }
+        self._save(data)
+
+    def unregister(self, name: str) -> bool:
+        data = self._load()
+        if name in data["workspaces"]:
+            del data["workspaces"][name]
+            self._save(data)
+            return True
+        return False
+
+    def list_workspaces(self) -> dict:
+        """Return all workspaces, marking stale ones."""
+        data = self._load()
+        for name, info in data["workspaces"].items():
+            info["exists"] = Path(info["path"]).exists()
+        return data["workspaces"]
+
+    def search(self, query: str) -> list[dict]:
+        """Search across all workspace MEMORY.md files for a query."""
+        results = []
+        for name, info in self.list_workspaces().items():
+            ghost_dir = Path(info["path"])
+            if not ghost_dir.exists():
+                continue
+            index_path = ghost_dir / "MEMORY.md"
+            if not index_path.exists():
+                continue
+            content = index_path.read_text(encoding="utf-8").lower()
+            if query.lower() in content:
+                results.append({
+                    "workspace": name,
+                    "path": info["path"],
+                    "match_in": "MEMORY.md",
+                })
+            # Also search topics
+            topics_dir = ghost_dir / "topics"
+            if topics_dir.exists():
+                for f in topics_dir.glob("*.md"):
+                    try:
+                        tc = f.read_text(encoding="utf-8").lower()
+                        if query.lower() in tc:
+                            results.append({
+                                "workspace": name,
+                                "path": info["path"],
+                                "match_in": f"topics/{f.stem}",
+                            })
+                    except Exception:
+                        pass
+        return results

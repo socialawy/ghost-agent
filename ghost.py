@@ -30,7 +30,7 @@ import yaml
 from dotenv import load_dotenv
 
 from llm_client import LLMClient
-from memory import Memory
+from memory import Memory, MasterIndex
 from dream import DreamEngine
 
 # ── Logging ───────────────────────────────────────────────
@@ -696,6 +696,15 @@ class KairosDaemon:
         self.dream_interval = drc.get("auto_interval_minutes", 30) * 60
         self.compact_threshold = drc.get("compact_threshold", 200)
 
+        # Auto-register in master index
+        try:
+            master = MasterIndex()
+            name = self.state_dir.resolve().parent.name
+            master.register(name, self.state_dir.resolve())
+            logger.info("Registered workspace '%s' in master index", name)
+        except Exception:
+            pass
+
         # State
         self.state = self._load_checkpoint()
 
@@ -877,6 +886,66 @@ class KairosDaemon:
     def _shutdown(self, signum, frame):
         logger.info("Shutdown signal received (%s)", signum)
         self.running = False
+
+
+def cmd_workspace(config: dict, action: str, args_rest: list):
+    """Manage multi-workspace master index."""
+    master = MasterIndex()
+
+    if action == "add":
+        if not args_rest:
+            print("Usage: ghost workspace add <path> [--name <name>]")
+            return
+        target = Path(args_rest[0]).resolve()
+        ghost_dir = target / ".ghost" if not str(target).endswith(".ghost") else target
+        if not ghost_dir.exists():
+            print(f"\033[31m✗ No .ghost/ directory at {ghost_dir}\033[0m")
+            return
+        name = ghost_dir.parent.name
+        if "--name" in args_rest:
+            idx = args_rest.index("--name")
+            if idx + 1 < len(args_rest):
+                name = args_rest[idx + 1]
+        master.register(name, ghost_dir)
+        print(f"✓ Registered workspace: {name} ({ghost_dir})")
+
+    elif action == "list":
+        workspaces = master.list_workspaces()
+        if not workspaces:
+            print("No workspaces registered. Use: ghost workspace add <path>")
+            return
+        rows = []
+        for name, info in workspaces.items():
+            status = "\033[32mok\033[0m" if info.get("exists") else "\033[31mmissing\033[0m"
+            rows.append(f"  {name:<20} {status:<20} {info['path']}")
+        print(f"Registered workspaces ({len(workspaces)}):")
+        for r in rows:
+            print(r)
+
+    elif action == "search":
+        if not args_rest:
+            print("Usage: ghost workspace search <query>")
+            return
+        query = " ".join(args_rest)
+        results = master.search(query)
+        if not results:
+            print(f"No matches for '{query}' across workspaces.")
+            return
+        print(f"Found {len(results)} match(es) for '{query}':")
+        for r in results:
+            print(f"  [{r['workspace']}] {r['match_in']}")
+
+    elif action == "remove":
+        if not args_rest:
+            print("Usage: ghost workspace remove <name>")
+            return
+        if master.unregister(args_rest[0]):
+            print(f"✓ Removed: {args_rest[0]}")
+        else:
+            print(f"Workspace not found: {args_rest[0]}")
+
+    else:
+        print(f"Unknown action: {action}. Use: add, list, search, remove")
 
 
 def cmd_bridge(config: dict, port: int = 7701):
@@ -1061,6 +1130,10 @@ def main():
     plan_p = sub.add_parser("plan", help="ULTRAPLAN — deep planning via expensive model")
     plan_p.add_argument("goal", nargs="+", help="Planning goal")
 
+    ws_p = sub.add_parser("workspace", help="Manage multi-workspace master index")
+    ws_p.add_argument("action", choices=["add", "list", "search", "remove"], help="Action")
+    ws_p.add_argument("ws_args", nargs="*", default=[], help="Action arguments")
+
     link_p = sub.add_parser("link", help="Link a file as persistent memory source")
     link_p.add_argument("path", help="Path to file")
 
@@ -1112,6 +1185,7 @@ def main():
         "diff": lambda: cmd_diff(config, args.cycle),
         "bridge": lambda: cmd_bridge(config, args.port),
         "plan": lambda: cmd_plan(config, " ".join(args.goal)),
+        "workspace": lambda: cmd_workspace(config, args.action, args.ws_args),
     }
 
     dispatch[args.command]()
