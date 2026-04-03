@@ -25,6 +25,28 @@ Ghost can "link" to external source files (like project registries or blueprints
 
 ---
 
+## Scaling & High Availability (v1.2+)
+
+Ghost is built to manage massive, high-decibel workspaces without overwhelming LLM context or failing due to API outages.
+
+### 1. Provider Cascade (Hardened)
+Configure a list of `providers` in `config.yaml`. Ghost implements a multi-tier failover strategy:
+- **Immediate Cascade**: Authentication errors (401/403) trigger an instant switch to the next provider.
+- **Retry-then-Cascade**: Rate limits (429) and server errors (5xx) attempt exponential backoff retries before failing over.
+- **`ghost ping` (DREAM)**: Added direct testing for the configured Dream Engine provider, including the cascade chain and real-time retry feedback.
+- **Hardened Error Parsing**: Robust handling of list-wrapped API error responses (Gemini) and complex retry-after strings (Groq) ensures reliable failover.
+
+### 2. Round-Robin Digestion
+Instead of loading every linked file simultaneously—which wastes tokens and risks context fragmentation—Ghost uses a round-robin rotation. Each dream cycle picks **one** high-priority source (stale or changed) to digest, ensuring your entire codebase is refreshed incrementally.
+
+### 3. Topic Auto-Splitting
+To maintain high retrieval accuracy, Ghost automatically detects topics that exceed 3,000 characters. These are intelligently split into focused sub-topics with a parent index summary, preventing "knowledge bloat" and keeping LLM focus razor-sharp.
+
+### 4. Concurrent Safe (File Locking)
+Ghost uses platform-aware advisory file locking (`msvcrt` on Windows, `fcntl` on Unix). This allows you to run the KAIROS daemon in the background while multiple IDE agents or CLI tools safely append to the transcript simultaneously.
+
+---
+
 ## Architecture
 ```
 ghost chat/inject ──→ transcript.jsonl (append-only log)

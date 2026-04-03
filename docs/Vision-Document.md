@@ -135,7 +135,7 @@ alias ghost-ctx="cat .ghost/MEMORY.md .ghost/topics/*.md"
 ### v1.1 ✓ (shipped)
 - 4-phase dream, rate-limit resilience, dual-LLM, source linking
 
-### v1.2 (next)
+### v1.2 ✓ (shipped)
 - Round-robin source digestion
 - Provider cascade (local → free → paid)
 - Topic auto-splitting at size threshold

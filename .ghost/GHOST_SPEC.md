@@ -27,4 +27,4 @@ Paste this into your AI chat or add it to your project's `.claude/instructions.m
 For more details on the "Hippocampus" active synthesis model or the KAIROS watchdog, see the [README.md](../README.md).
 
 ---
-*Version 1.1.0 — 2026-04-02*
+*Version 1.2.0 — 2026-04-03*

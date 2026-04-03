@@ -1,4 +1,20 @@
-# Changelog
+## [1.2.0] - 2026-04-03
+
+### Scaling & High Availability
+- **Provider Cascade (Hardened)**: Implemented multi-tier failover logic in `llm_client.py`.
+    - **Instant Failover**: Authentication failures (401/403) and misconfigurations now trigger an immediate switch to the next backup provider.
+    - **Resourceful Retries**: Enhanced `429 (Resource Exhausted)` handling with robust `Retry-After` parsing (supporting Gemini-style list-wrapped JSON and Groq-style strings) and exponential backoff.
+- **Round-Robin Digestion**: The Dream Engine now intelligently rotates through linked source files, processing one source per cycle based on priority (changed first, then stale). This prevents LLM context exhaustion on large codebases.
+- **Topic Auto-Splitting**: Large topic files (over 3000 characters) are automatically split into focused sub-topics with summaries. Parent topics become indices, maintaining structural clarity and LLM focus.
+
+### Reliability & Concurrent Access
+- **Advisory File Locking**: Implemented robust file locking using `msvcrt` (Windows) and `fcntl` (Unix). This allows multiple tools (e.g. Ghost + IDE agents) to safely read and write to the Shared Memory simultaneously without corruption.
+- **Resilient Dreaming**: The Dream Engine now persists its state. If a consolidation cycle is interrupted (by rate limits or errors), it will resume from the exact phase it left off during the next run.
+
+### CLI Enhancements
+- **`ghost sources`**: List all linked files with their current status (exists/missing) and last-read timestamps.
+- **`ghost unlink`**: Easily remove source tracking to keep the focus tight.
+- **`ghost ping` (DREAM)**: Added direct testing for the configured Dream Engine provider, including the cascade chain.
 
 ## [1.1.0] - 2026-04-02
 

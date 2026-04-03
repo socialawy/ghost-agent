@@ -225,3 +225,7 @@ local-files/
 # Local test infrastructure
 dummy_remote/
 debug_env.py
+*.bak
+rr_source*.txt
+test_source*.txt
+v12_verify.txt

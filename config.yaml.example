@@ -43,6 +43,15 @@
 #   model: "claude-3-5-sonnet-20240620"
 #   min_interval: 0
 
+# OPTION F: OpenRouter (Free high-context models)
+# llm:
+#   provider: "openai"
+#   base_url: "https://openrouter.ai/api/v1"
+#   api_key: "${OPENROUTER_API_KEY}"
+#   model: "nvidia/nemotron-3-super-120b-a12b:free" # Privacy-safe, 262K context
+#   # model: "qwen/qwen3.6-plus-preview:free"       # Top-tier, 1M context
+#   min_interval: 3.0
+
 # ──────────────────────────────────────────────────
 
 # Fast model for interactive chat
@@ -55,19 +64,39 @@ llm:
   temperature: 0.3
   min_interval: 3.0
 
-# Smarter model for dream consolidation
-# Pick whichever you have access to:
+# Smarter model for dream consolidation (Gemini 2.0 Flash — free, fast, smart)
 dream_llm:
   provider: "openai"
-  base_url: "https://api.groq.com/openai/v1"
-  api_key: "${GROQ_API_KEY}"
-  model: "deepseek-r1-distill-llama-70b"
+  base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+  api_key: "${GEMINI_API_KEY}"
+  model: "gemini-2.0-flash"
   max_tokens: 8192
   temperature: 0.2
-  min_interval: 3.0
-  json_mode_supported: false  # DeepSeek R1 on Groq rejects response_format header
+  min_interval: 2
+  json_mode_supported: true
 
-# If you have OpenAI:
+# OPTION: OpenRouter Free Models (High Context / Privacy)
+# dream_llm:
+#   provider: "openai"
+#   base_url: "https://openrouter.ai/api/v1"
+#   api_key: "${OPENROUTER_API_KEY}"
+#   model: "nvidia/nemotron-3-super-120b-a12b:free" # Privacy-safe, 262K context
+#   max_tokens: 8192
+#   temperature: 0.1
+#   min_interval: 3.0
+#   json_mode_supported: false # Best for reasoning/nemotron
+
+# Alternative dream models:
+# dream_llm:
+#   provider: "openai"
+#   base_url: "https://api.groq.com/openai/v1"
+#   api_key: "${GROQ_API_KEY}"
+#   model: "deepseek-r1-distill-llama-70b"
+#   max_tokens: 8192
+#   temperature: 0.2
+#   min_interval: 3.0
+#   json_mode_supported: false
+
 # dream_llm:
 #   provider: "openai"
 #   base_url: "https://api.openai.com/v1"
@@ -77,7 +106,6 @@ dream_llm:
 #   temperature: 0.2
 #   min_interval: 0
 
-# If you have Anthropic:
 # dream_llm:
 #   provider: "anthropic"
 #   api_key: "${ANTHROPIC_API_KEY}"

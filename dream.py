@@ -184,6 +184,36 @@ RULES:
 7. PERSISTENCE: If a fact was consolidated in the last 2 cycles, protect it from demotion unless explicitly contradicted.
 """
 
+SPLIT_SYSTEM = """\
+You are a memory SPLIT agent. A topic file has grown too large and must be split
+into smaller, focused sub-topics.
+
+You receive:
+- The topic slug and its full content
+- The current MEMORY.md index
+
+OUTPUT FORMAT — respond with **only** valid JSON:
+{
+  "parent_summary": "Short summary for the parent topic (max 300 chars), linking to children",
+  "children": [
+    {
+      "slug": "parent-subtopic-name",
+      "label": "Human-readable label",
+      "content": "Full markdown content for the sub-topic file"
+    }
+  ],
+  "split_log": "≤1 sentence explaining the split"
+}
+
+RULES:
+1. Split into 2-4 children. Each child must be at least 200 chars.
+2. Children should be thematically coherent — group related facts together.
+3. The parent_summary should mention each child by slug so readers know where to look.
+4. Preserve ALL data from the original topic — splitting must be lossless.
+5. Child slugs MUST start with the parent slug (e.g., "registry" → "registry-active", "registry-archived").
+6. NEVER generalize or summarize away specific numbers, names, or dates.
+"""
+
 COMPACT_SYSTEM = """\
 Summarize these interaction log entries into a concise summary (max 400 words).
 Preserve: key decisions, facts, user preferences, project states, action items.
@@ -362,6 +392,13 @@ class DreamEngine:
             else:
                 consolidate = state["phases"]["consolidate"]
 
+            # ── PHASE 3.5: SPLIT oversized topics ────────
+            if "split" not in state["phases"]:
+                split_topics = self._split_oversized_topics()
+                state["phases"]["split"] = {"split_topics": split_topics}
+                if split_topics:
+                    self.memory.set_dream_state(state)
+
             # ── PHASE 4: PRUNE ───────────────────────────
             if "prune" not in state["phases"]:
                 logger.info("Phase 4/4: Prune")
@@ -453,7 +490,15 @@ class DreamEngine:
         return self._call(GATHER_SYSTEM, prompt)
 
     def _load_sources(self) -> dict[str, str]:
-        """Read all linked source files that have changed since last read."""
+        """Round-robin source digestion: pick ONE source per dream cycle.
+
+        Priority order:
+        1. Sources whose file changed since last read (jump to front)
+        2. Most stale source (oldest last_read timestamp)
+
+        This ensures full rotation across N sources in N dream cycles,
+        while changed sources get immediate attention.
+        """
         sources_file = self.memory.base_dir / "sources.json"
         if not sources_file.exists():
             return {}
@@ -463,9 +508,12 @@ class DreamEngine:
         except Exception:
             return {}
 
-        updated = {}
-        changed = False
+        if not sources:
+            return {}
 
+        # Build priority queue: (priority_score, key, meta)
+        # Lower score = higher priority
+        candidates = []
         for key, meta in sources.items():
             path = Path(meta["path"])
             if not path.exists():
@@ -474,25 +522,49 @@ class DreamEngine:
 
             current_mtime = path.stat().st_mtime
             last_read_mtime = meta.get("last_read_mtime", 0)
+            last_read_ts = meta.get("last_read", "")
 
+            # Changed sources get priority 0 (front of queue)
             if current_mtime > last_read_mtime:
+                priority = 0
+            elif not last_read_ts:
+                # Never read — priority 1
+                priority = 1
+            else:
+                # Already read, not changed — priority based on staleness
+                # Older last_read = higher priority (lower number after 2)
                 try:
-                    content = path.read_text(encoding="utf-8", errors="replace")
-                    # Truncate very large files — give dream the first 8K
-                    if len(content) > 8000:
-                        content = content[:8000] + f"\n\n…[truncated, full file: {len(content)} chars]"
-                    updated[meta["name"]] = content
-                    meta["last_read"] = datetime.now(timezone.utc).isoformat()
-                    meta["last_read_mtime"] = current_mtime
-                    changed = True
-                    logger.info("Source updated: %s (%d chars)", meta["name"], len(content))
-                except Exception as exc:
-                    logger.warning("Failed to read source %s: %s", path, exc)
+                    dt = datetime.fromisoformat(last_read_ts)
+                    age_seconds = (datetime.now(timezone.utc) - dt).total_seconds()
+                    priority = 2 + (1.0 / max(age_seconds, 1))  # More stale = closer to 2
+                except Exception:
+                    priority = 2
 
-        if changed:
+            candidates.append((priority, key, meta, current_mtime))
+
+        if not candidates:
+            return {}
+
+        # Sort by priority (lowest first) and pick ONE
+        candidates.sort(key=lambda x: x[0])
+        _, key, meta, current_mtime = candidates[0]
+
+        path = Path(meta["path"])
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            if len(content) > 8000:
+                content = content[:8000] + f"\n\n…[truncated, full file: {len(content)} chars]"
+
+            meta["last_read"] = datetime.now(timezone.utc).isoformat()
+            meta["last_read_mtime"] = current_mtime
             sources_file.write_text(json.dumps(sources, indent=2))
 
-        return updated
+            logger.info("Round-robin source: %s (%d chars, %d sources total)",
+                       meta["name"], len(content), len(candidates))
+            return {meta["name"]: content}
+        except Exception as exc:
+            logger.warning("Failed to read source %s: %s", path, exc)
+            return {}
 
     # ── Phase 3: Consolidate ─────────────────────────────
 
@@ -596,6 +668,64 @@ class DreamEngine:
                 logger.info("Demoted claim in %s: %s", topic, claim)
 
         return result
+
+    # ── Topic Splitting ───────────────────────────────────
+
+    SPLIT_THRESHOLD = 3000  # chars
+
+    def _split_oversized_topics(self) -> list[str]:
+        """Check all topics for size and split any over threshold.
+        Returns list of split topic names."""
+        split_topics = []
+        for topic_name in self.memory.topics.list_topics():
+            content = self.memory.topics.read(topic_name)
+            if not content or len(content) <= self.SPLIT_THRESHOLD:
+                continue
+
+            # Skip if this is already a child topic (contains "-" after parent prefix)
+            # and parent exists — avoid recursive splitting of recently-split children
+            # Actually, just check content length. If a child grows big, it can split too.
+
+            logger.info("Topic '%s' exceeds %d chars (%d). Splitting…",
+                       topic_name, self.SPLIT_THRESHOLD, len(content))
+
+            current_index = self.memory.index.read()
+            prompt = (
+                f"## Topic to Split\nSlug: {topic_name}\n\n"
+                f"## Content ({len(content)} chars)\n{content}\n\n"
+                f"## Current Memory Index\n{current_index}"
+            )
+
+            try:
+                result = self._call(SPLIT_SYSTEM, prompt)
+            except Exception as exc:
+                logger.warning("Split failed for %s: %s", topic_name, exc)
+                continue
+
+            children = result.get("children", [])
+            parent_summary = result.get("parent_summary", "")
+
+            if not children or len(children) < 2:
+                logger.warning("Split produced <2 children for %s, skipping", topic_name)
+                continue
+
+            # Write children
+            for child in children:
+                slug = child.get("slug", "").strip()
+                child_content = child.get("content", "").strip()
+                if slug and child_content:
+                    self.memory.topics.write(slug, child_content)
+
+            # Rewrite parent as summary
+            if parent_summary:
+                self.memory.topics.write(topic_name, parent_summary)
+
+            split_topics.append(topic_name)
+            logger.info("Split '%s' into %d children: %s",
+                       topic_name, len(children),
+                       ", ".join(c.get("slug", "?") for c in children))
+
+        return split_topics
 
     # ── Compaction (standalone, called by daemon) ─────────
 
@@ -773,12 +903,6 @@ class DreamEngine:
             if any(fc in content.lower() for fc in failed_claims if fc):
                 logger.warning("Skipping topic '%s' — contains unverified claims", topic)
                 continue
-
-            # Topic Splitting Check
-            if len(content) > 4000:
-                logger.info("Topic '%s' is large (%d chars). Suggesting split in next cycle.", topic, len(content))
-                # Future: Auto-split logic could go here. 
-                # For now, we just tag it in the index or log it.
 
             self.memory.topics.write(topic, content)
 

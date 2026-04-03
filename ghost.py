@@ -10,6 +10,9 @@ Usage:
     python ghost.py daemon                 Start KAIROS always-on daemon
     python ghost.py recall <topic>         Print a topic file
     python ghost.py inject <text>          Add an observation directly to transcript
+    python ghost.py link <path>            Link a file as persistent memory source
+    python ghost.py unlink <path>          Unlink a source file
+    python ghost.py sources                List all linked source files
     python ghost.py ping                   Test LLM connectivity and pacing
 """
 
@@ -60,7 +63,11 @@ def load_config(path: str = "config.yaml") -> dict:
             return [resolve_env_vars(i) for i in data]
         elif isinstance(data, str) and data.startswith("${") and data.endswith("}"):
             var_name = data[2:-1]
-            return os.getenv(var_name, data)
+            val = os.getenv(var_name)
+            if val is None:
+                logger.warning("Environment variable %s not set. Using empty string.", var_name)
+                return ""
+            return val
         return data
 
     config = resolve_env_vars(config)
@@ -290,27 +297,38 @@ def cmd_ping(config: dict):
         if not cfg:
             return
         
-        llm = LLMClient(cfg)
-        pacing = cfg.get("min_interval", 0)
+        client = LLMClient(cfg)
+        is_cascade = "providers" in cfg
+        pacing = cfg.get("min_interval", 0) if not is_cascade else client._providers[0].min_interval
 
-        _print_box([
-            f"Provider:  {cfg.get('provider', 'openai')}",
-            f"Model:     {cfg.get('model', 'unknown')}",
-            f"Base URL:  {cfg.get('base_url', 'default')}",
+        rows = []
+        if is_cascade:
+            rows.append(f"Mode:      CASCADE ({len(client._providers)} providers)")
+            for i, p in enumerate(client._providers):
+                rows.append(f"  [{i+1}] {p.model}")
+        else:
+            rows.append(f"Provider:  {cfg.get('provider', 'openai')}")
+            rows.append(f"Model:     {cfg.get('model', 'unknown')}")
+        
+        rows.extend([
+            f"Base URL:  {client._providers[0].base_url[:35]}",
             f"Pacing:    {pacing}s",
             "---",
             "Testing Connectivity...",
-        ], title=f"LLM PING TEST: {label}")
+        ])
+
+        _print_box(rows, title=f"LLM PING TEST: {label}")
 
         # Call 1: Simple JSON test
         start_1 = time.time()
         try:
-            resp_1 = llm.chat(
+            resp_1 = client.chat(
                 messages=[{"role": "user", "content": "Respond with JSON: {\"status\": \"ok\"}"}],
                 system="You are a connectivity tester. Always respond in valid JSON."
             )
+            # After chat, client.model/provider are updated to the one that actually worked
             dur_1 = time.time() - start_1
-            print(f"  [✓] Call 1 success ({dur_1:.2f}s)")
+            print(f"  [✓] Call 1 success ({dur_1:.2f}s) via {client.model}")
             print(f"      Response: {resp_1}")
         except Exception as e:
             print(f"  [✗] Call 1 failed: {e}")
@@ -321,12 +339,12 @@ def cmd_ping(config: dict):
             print(f"  Testing pacing (expecting ~{pacing}s delay)...")
             start_2 = time.time()
             try:
-                resp_2 = llm.chat(
+                resp_2 = client.chat(
                     messages=[{"role": "user", "content": "Respond with JSON: {\"status\": \"pong\"}"}],
                     system="You are a connectivity tester."
                 )
                 dur_2 = time.time() - start_2
-                print(f"  [✓] Call 2 success ({dur_2:.2f}s)")
+                print(f"  [✓] Call 2 success ({dur_2:.2f}s) via {client.model}")
                 if dur_2 >= pacing:
                     print(f"      Pacing verified: {dur_2:.2f}s >= {pacing}s")
                 else:
@@ -721,6 +739,83 @@ def cmd_daemon(config: dict):
     daemon.run()
 
 
+def cmd_sources(config: dict):
+    """List all linked source files with status."""
+    mem = Memory(Path(config.get("state_dir", ".ghost")))
+    sources_file = mem.base_dir / "sources.json"
+
+    if not sources_file.exists():
+        print("No sources linked yet. Use: ghost link <path>")
+        return
+
+    try:
+        sources = json.loads(sources_file.read_text())
+    except Exception:
+        print("Could not read sources.json")
+        return
+
+    if not sources:
+        print("No sources linked yet. Use: ghost link <path>")
+        return
+
+    rows = []
+    for key, meta in sources.items():
+        path = Path(meta["path"])
+        exists = path.exists()
+        status = "\033[32mexists\033[0m" if exists else "\033[31mmissing\033[0m"
+        last_read = meta.get("last_read", "never")
+        if last_read != "never":
+            last_read = last_read[:19]  # Trim ISO timestamp
+        name = meta.get("name", path.stem)
+        rows.append(f"  {name:<20} {status:<20} last_read: {last_read}")
+
+    print(f"Linked sources ({len(sources)}):")
+    for r in rows:
+        print(r)
+
+
+def cmd_unlink(config: dict, path: str):
+    """Remove a file from linked sources."""
+    mem = Memory(Path(config.get("state_dir", ".ghost")))
+    sources_file = mem.base_dir / "sources.json"
+
+    if not sources_file.exists():
+        print("No sources linked.")
+        return
+
+    try:
+        sources = json.loads(sources_file.read_text())
+    except Exception:
+        print("Could not read sources.json")
+        return
+
+    target = Path(path).resolve()
+    key = str(target)
+
+    # Also try matching by name
+    if key not in sources:
+        for k, meta in sources.items():
+            if meta.get("name") == path or Path(k).name == path:
+                key = k
+                break
+
+    if key not in sources:
+        print(f"Source not found: {path}")
+        print(f"Linked sources: {', '.join(m.get('name', k) for k, m in sources.items()) or '(none)'}")
+        return
+
+    removed = sources.pop(key)
+    sources_file.write_text(json.dumps(sources, indent=2))
+
+    mem.transcript.append(
+        role="system",
+        content=f"[SOURCE UNLINKED] {removed.get('name', path)}",
+        event="source_unlink",
+    )
+
+    print(f"✓ Unlinked: {removed.get('name', path)}")
+
+
 def cmd_link(config: dict, path: str):
     """Register a file as a persistent memory source."""
     mem = Memory(Path(config.get("state_dir", ".ghost")))
@@ -797,6 +892,11 @@ def main():
     link_p = sub.add_parser("link", help="Link a file as persistent memory source")
     link_p.add_argument("path", help="Path to file")
 
+    unlink_p = sub.add_parser("unlink", help="Unlink a source file")
+    unlink_p.add_argument("path", help="Path or name of source to unlink")
+
+    sub.add_parser("sources", help="List all linked source files")
+
     recall_p = sub.add_parser("recall", help="Print a topic file")
     recall_p.add_argument("topic", help="Topic slug name")
 
@@ -832,6 +932,8 @@ def main():
         ),
         "ping": lambda: cmd_ping(config),
         "link": lambda: cmd_link(config, args.path),
+        "unlink": lambda: cmd_unlink(config, args.path),
+        "sources": lambda: cmd_sources(config),
     }
 
     dispatch[args.command]()

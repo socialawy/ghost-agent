@@ -8,11 +8,49 @@ Layer 3 — transcript.jsonl  Append-only interaction log (hidden from main cont
 
 import json
 import logging
+import os
+import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("ghost.memory")
+
+
+# ── File locking ─────────────────────────────────────────
+
+@contextmanager
+def _file_lock(f):
+    """Advisory file lock — platform-aware. Locks the open file handle during writes."""
+    locked = False
+    lock_pos = 0
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            lock_pos = f.tell()
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            locked = True
+        else:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = True
+    except (OSError, IOError):
+        logger.debug("File lock unavailable, proceeding without lock")
+    try:
+        yield
+    finally:
+        if locked:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    f.seek(lock_pos)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
 
 
 # ── Layer 3: Append-only transcript ──────────────────────
@@ -33,7 +71,8 @@ class Transcript:
             **meta,
         }
         with open(self.path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            with _file_lock(f):
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def read_since(self, cursor: int = 0) -> tuple[list[dict], int]:
         """Read entries from byte-offset *cursor*.  Returns (entries, new_cursor)."""
