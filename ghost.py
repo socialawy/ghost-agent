@@ -357,6 +357,90 @@ def cmd_diff(config: dict, cycle: int = None):
         print("No changes since snapshot.")
 
 
+PLAN_SYSTEM = """\
+You are a strategic planning agent with access to the user's full workspace knowledge.
+Produce a detailed, phased implementation plan for the given goal.
+
+Use the workspace context below to ground your plan in real files, real projects,
+and real constraints. Be specific — reference actual paths, tools, and structures.
+
+OUTPUT FORMAT — respond in markdown:
+# Plan: {goal}
+
+## Constraints & Assumptions
+- (list what you're assuming based on context)
+
+## Phases
+### Phase 1: ...
+- **What:** ...
+- **Why:** ...
+- **How:** ...
+- **Files:** ...
+
+### Phase 2: ...
+(repeat)
+
+## Success Criteria
+- (measurable outcomes)
+
+## Risks
+- (what could go wrong)
+"""
+
+
+def cmd_plan(config: dict, goal: str):
+    """Run ULTRAPLAN — deep thinking offloaded to expensive model."""
+    mem = Memory(Path(config.get("state_dir", ".ghost")))
+
+    # Resolve LLM: plan_llm > dream_llm > llm
+    if "plan_llm" in config:
+        llm = LLMClient(config["plan_llm"])
+        label = "plan_llm"
+    elif "dream_llm" in config:
+        llm = LLMClient(config["dream_llm"])
+        label = "dream_llm (fallback)"
+    else:
+        llm = LLMClient(config["llm"])
+        label = "llm (fallback)"
+
+    print(f"╔══════════════════════════════════════════╗")
+    print(f"║  ULTRAPLAN — Deep Planning               ║")
+    print(f"╚══════════════════════════════════════════╝")
+    print(f"  Goal: {goal}")
+    print(f"  Model: {label}")
+    print(f"  Thinking...")
+
+    context = mem.build_context()
+    user_prompt = f"## Workspace Context\n{context}\n\n## Goal\n{goal}"
+
+    try:
+        result = llm.chat(
+            messages=[{"role": "user", "content": user_prompt}],
+            system=PLAN_SYSTEM,
+            json_mode=False,
+        )
+    except Exception as exc:
+        print(f"\033[31m✗ Plan failed: {exc}\033[0m")
+        return
+
+    # Save as topic
+    import re
+    slug = re.sub(r'[^a-z0-9]+', '-', goal.lower()).strip('-')[:40]
+    topic_name = f"plan-{slug}"
+    mem.topics.write(topic_name, result)
+
+    # Log to transcript
+    mem.transcript.append(
+        role="system",
+        content=f"[ULTRAPLAN] Goal: {goal} → topic: {topic_name}",
+        event="plan",
+        source="ultraplan",
+    )
+
+    print(f"\n\033[32m✓ Plan saved to topic: {topic_name}\033[0m")
+    print(f"\n{result}")
+
+
 def cmd_ping(config: dict):
     """Test LLM connectivity and pacing for both Chat and Dream models."""
     
@@ -974,6 +1058,9 @@ def main():
     bridge_p = sub.add_parser("bridge", help="Start Ghost Bridge HTTP server")
     bridge_p.add_argument("-p", "--port", type=int, default=7701, help="Port (default: 7701)")
 
+    plan_p = sub.add_parser("plan", help="ULTRAPLAN — deep planning via expensive model")
+    plan_p.add_argument("goal", nargs="+", help="Planning goal")
+
     link_p = sub.add_parser("link", help="Link a file as persistent memory source")
     link_p.add_argument("path", help="Path to file")
 
@@ -1024,6 +1111,7 @@ def main():
         "sources": lambda: cmd_sources(config),
         "diff": lambda: cmd_diff(config, args.cycle),
         "bridge": lambda: cmd_bridge(config, args.port),
+        "plan": lambda: cmd_plan(config, " ".join(args.goal)),
     }
 
     dispatch[args.command]()
