@@ -14,7 +14,7 @@ Every time you run `git push`, this script:
 3.  If detected, the **Push is ABORTED** and a warning is displayed.
 
 ## Why this is useful
--   **Local Synthesis**: You can commit changes to `BLUEPRINT.md` or `CO_PM.json` locally, giving you full undo/redo support and a persistent history of your thoughts.
+-   **Local Synthesis**: You can commit changes to personal files locally, giving you full undo/redo support and a persistent history of your thoughts.
 -   **Safety**: Even if you `git add .` or `git commit -a`, the safeguard prevents you from accidentally leaking your private knowledge to the remote.
 -   **Standardized Separation**: By keeping `.ghost/` and `local-files/` separate from the core logic, we maintain a clean boundary between the "standard" and your specific "context".
 
@@ -25,4 +25,4 @@ git push --no-verify
 ```
 
 > [!CAUTION]
-> This hook is local to your machine. If you clone this repository elsewhere, you must recreate the hook (`.git/hooks/pre-push`) to maintain the safeguard.
+> This hook is local to your. If you clone this repository, you must create hook (`.git/hooks/pre-push`) to maintain the safeguard.
