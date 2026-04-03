@@ -795,14 +795,29 @@ class KairosDaemon:
         self.running = False
 
 
+def cmd_bridge(config: dict, port: int = 7701):
+    """Start the Ghost Bridge HTTP server."""
+    from bridge import start_bridge
+    start_bridge(config, port=port, blocking=True)
+
+
 def cmd_daemon(config: dict):
     """Start the KAIROS always-on daemon."""
-    print("╔══════════════════════════════════════╗")
-    print("║       KAIROS DAEMON STARTING         ║")
-    print("║  Press Ctrl+C to stop                ║")
-    print("╚══════════════════════════════════════╝")
+    bridge_enabled = config.get("daemon", {}).get("bridge_enabled", False)
+    bridge_port = config.get("daemon", {}).get("bridge_port", 7701)
+
+    rows = ["Press Ctrl+C to stop"]
+    if bridge_enabled:
+        rows.append(f"Bridge: http://127.0.0.1:{bridge_port}")
+    _print_box(rows, title="KAIROS DAEMON STARTING")
 
     daemon = KairosDaemon(config)
+
+    if bridge_enabled:
+        from bridge import start_bridge
+        server = start_bridge(config, port=bridge_port, blocking=False)
+        logger.info("Bridge started on port %d", bridge_port)
+
     daemon.run()
 
 
@@ -956,6 +971,9 @@ def main():
     sub.add_parser("daemon", help="Start KAIROS always-on daemon")
     sub.add_parser("ping", help="Test LLM connectivity and pacing")
 
+    bridge_p = sub.add_parser("bridge", help="Start Ghost Bridge HTTP server")
+    bridge_p.add_argument("-p", "--port", type=int, default=7701, help="Port (default: 7701)")
+
     link_p = sub.add_parser("link", help="Link a file as persistent memory source")
     link_p.add_argument("path", help="Path to file")
 
@@ -1005,6 +1023,7 @@ def main():
         "unlink": lambda: cmd_unlink(config, args.path),
         "sources": lambda: cmd_sources(config),
         "diff": lambda: cmd_diff(config, args.cycle),
+        "bridge": lambda: cmd_bridge(config, args.port),
     }
 
     dispatch[args.command]()
