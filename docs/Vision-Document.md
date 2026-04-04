@@ -130,25 +130,20 @@ alias ghost-ctx="cat .ghost/MEMORY.md .ghost/topics/*.md"
 
 ---
 
-## Roadmap
-
-### v1.1 ✓ (shipped)
+### v1.1 - v1.2 ✓ (shipped)
 - 4-phase dream, rate-limit resilience, dual-LLM, source linking
-
-### v1.2 ✓ (shipped)
 - Round-robin source digestion
 - Provider cascade (local → free → paid)
 - Topic auto-splitting at size threshold
-- File locking for transcript (belt-and-suspenders)
-- ghost unlink, ghost sources commands
 
-### v1.3
-- Cross-project graph (edges between topics from different sources)
-- Dream quality scoring (detect when a dream degraded a topic)
-- ghost diff — show what changed between dream cycles
+### v1.3 - v1.6 ✓ (shipped)
+- **Quality Scoring**: detect when a dream degraded a topic.
+- **Ghost Bridge**: Local HTTP API for external tool integration.
+- **ULTRAPLAN**: Deep strategic planning via asymmetric routing.
+- **Multi-Workspace**: Master index at `~/.ghost/master.json`.
+- **Continuous Context Management**: Token budgets, history snipping, reactive compaction.
 
-### v2.0
-- Multi-workspace with master index
+### v2.0 (Proposed)
 - Webhook listener (GitHub, Linear, etc.)
-- ULTRAPLAN: long-think planning offloaded to expensive model
 - Optional web dashboard (read-only view of .ghost/)
+- Asynchronous multi-agent synthesis

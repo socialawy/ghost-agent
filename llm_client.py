@@ -108,7 +108,7 @@ class LLMClient:
                     return result
 
                 except requests.exceptions.HTTPError as exc:
-                    status = exc.response.status_code if exc.response else 0
+                    status = exc.response.status_code if exc.response is not None else 0
                     last_exc = exc
 
                     # 1. IMMEDIATE CASCADE for auth errors or forbidden
@@ -154,7 +154,15 @@ class LLMClient:
                             break
                         raise
 
-                    # 4. FATAL (e.g. 400 Bad Request)
+                    # 4. IMMEDIATE CASCADE for 4xx (Bad Request, Payload Too Large)
+                    if status in (400, 413):
+                        if pi < len(self._providers) - 1:
+                            logger.warning("Provider %s rejected request (%d), cascading…", prov_label, status)
+                            print(f"[Cascade] Provider {prov_label} rejected request ({status}). Cascading to next...", flush=True)
+                            break
+                        raise
+
+                    # 5. FATAL
                     raise
 
                 except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
