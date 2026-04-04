@@ -279,7 +279,7 @@ def cmd_dream(config: dict):
             if name not in ("quality", "cross_link"):
                 print(f"  Phase [{name}]: {summary}")
         cross = phases.get("cross_link", {})
-        if cross.get("edges_added", 0) > 0:
+        if isinstance(cross, dict) and cross.get("edges_added", 0) > 0:
             print(f"  Cross-linked: {cross['edges_added']} new edges")
     elif status == "skipped":
         print(f"\033[33m⊘ Skipped: {result.get('reason', '?')}\033[0m")
@@ -630,8 +630,14 @@ def cmd_chat(config: dict):
         # Log user message to transcript
         mem.transcript.append(role="user", content=user_input, session=session_id)
 
-        # Build system prompt with full memory context
-        memory_context = mem.build_context()
+        # Track topic references in user input
+        for topic in mem.topics.list_topics():
+            if topic.lower() in user_input.lower():
+                mem.track_reference(topic)
+
+        # Build system prompt with budget-aware context
+        token_budget = config.get("context", {}).get("token_budget", 0)
+        memory_context = mem.build_context(token_budget=token_budget)
         system_prompt = CHAT_SYSTEM_TEMPLATE.format(
             memory_context=memory_context,
             now=datetime.now(timezone.utc).isoformat(),
@@ -640,8 +646,8 @@ def cmd_chat(config: dict):
         # Add to running messages
         messages.append({"role": "user", "content": user_input})
 
-        # Keep conversation window reasonable (last 20 turns)
-        window = messages[-40:]
+        # Smart conversation windowing
+        window = engine.snip_history(messages, user_input, max_messages=40)
 
         try:
             response = llm.chat(messages=window, system=system_prompt)

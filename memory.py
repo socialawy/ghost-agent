@@ -9,6 +9,7 @@ Layer 3 — transcript.jsonl  Append-only interaction log (hidden from main cont
 import json
 import logging
 import os
+import re
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -200,6 +201,55 @@ class MemoryIndex:
         self.path.write_text(content, encoding="utf-8")
 
 
+# ── Compact Cache ───────────────────────────────────────
+
+class CompactCache:
+    """Cache (start_offset, end_offset) -> summary for compacted transcript regions.
+
+    Avoids re-summarizing the same transcript segments during context building.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _load(self) -> dict:
+        if self.path.exists():
+            try:
+                return json.loads(self.path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {"regions": []}
+
+    def _save(self, data: dict):
+        self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def get(self, start: int, end: int) -> Optional[str]:
+        """Return cached summary for a byte range, or None."""
+        data = self._load()
+        for region in data["regions"]:
+            if region["start"] == start and region["end"] == end:
+                return region["summary"]
+        return None
+
+    def put(self, start: int, end: int, summary: str):
+        """Store a summary for a byte range."""
+        data = self._load()
+        # Replace existing if same range
+        data["regions"] = [r for r in data["regions"] if not (r["start"] == start and r["end"] == end)]
+        data["regions"].append({"start": start, "end": end, "summary": summary})
+        # Keep at most 20 cached regions
+        if len(data["regions"]) > 20:
+            data["regions"] = data["regions"][-20:]
+        self._save(data)
+
+    def invalidate_after(self, offset: int):
+        """Remove cached regions that start after the given offset (transcript changed)."""
+        data = self._load()
+        data["regions"] = [r for r in data["regions"] if r["start"] < offset]
+        self._save(data)
+
+
 # ── Unified Memory facade ────────────────────────────────
 
 class Memory:
@@ -212,8 +262,10 @@ class Memory:
         self.index = MemoryIndex(base_dir / "MEMORY.md")
         self.topics = TopicStore(base_dir / "topics")
         self.transcript = Transcript(base_dir / "transcript.jsonl")
+        self.compact_cache = CompactCache(base_dir / "compact_cache.json")
         self._cursor_path = base_dir / ".dream_cursor"
         self._state_path = base_dir / "dream_state.json"
+        self._refs_path = base_dir / ".topic_refs.json"
         self._write_spec()
 
     def _write_spec(self):
@@ -285,19 +337,85 @@ files to understand project context and recent decisions.
         else:
             self._state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
+    # topic reference tracking ────────────────────────────
+
+    def track_reference(self, topic: str):
+        """Record that a topic was referenced in the current turn."""
+        refs = self._load_refs()
+        refs[topic] = datetime.now(timezone.utc).isoformat()
+        self._save_refs(refs)
+
+    def _load_refs(self) -> dict:
+        if self._refs_path.exists():
+            try:
+                return json.loads(self._refs_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {}
+
+    def _save_refs(self, refs: dict):
+        self._refs_path.write_text(json.dumps(refs), encoding="utf-8")
+
+    def _get_recent_refs(self, max_age_seconds: float = 1800) -> set[str]:
+        """Return topics referenced within the last max_age_seconds."""
+        refs = self._load_refs()
+        now = datetime.now(timezone.utc)
+        recent = set()
+        for topic, ts in refs.items():
+            try:
+                dt = datetime.fromisoformat(ts)
+                if (now - dt).total_seconds() <= max_age_seconds:
+                    recent.add(topic)
+            except Exception:
+                pass
+        return recent
+
     # context builder ──────────────────────────────────────
 
-    def build_context(self, include_recent: int = 15) -> str:
-        """Assemble a context string from all three layers for injection into
-        the LLM system prompt."""
+    @staticmethod
+    def _estimate_chars(token_budget: int) -> int:
+        """Convert token budget to approximate character budget (4 chars/token)."""
+        return token_budget * 4
+
+    def build_context(self, include_recent: int = 15, token_budget: int = 0) -> str:
+        """Assemble a context string from all three layers.
+
+        If token_budget > 0, topics that don't fit are collapsed to a one-line
+        header. Recently referenced topics get priority for full inclusion.
+        """
         parts = ["=== MEMORY INDEX ===", self.index.read()]
+        index_chars = sum(len(p) for p in parts)
 
         topics = self.topics.read_all()
+        recent_refs = self._get_recent_refs() if token_budget > 0 else set()
+        char_budget = self._estimate_chars(token_budget) if token_budget > 0 else 0
+
+        # Reserve 30% of budget for transcript
+        topic_budget = int(char_budget * 0.7) - index_chars if char_budget > 0 else 0
+        transcript_budget = int(char_budget * 0.3) if char_budget > 0 else 0
+
         if topics:
             parts.append("\n=== TOPIC KNOWLEDGE ===")
-            for name, content in topics.items():
-                parts.append(f"\n--- {name} ---")
-                parts.append(content)
+            topic_chars_used = 0
+
+            # Sort: recently-referenced topics first
+            sorted_topics = sorted(topics.keys(), key=lambda t: (t not in recent_refs, t))
+
+            for name in sorted_topics:
+                content = topics[name]
+                if token_budget > 0:
+                    if topic_chars_used + len(content) > topic_budget and name not in recent_refs:
+                        # Collapse
+                        parts.append(f"\n--- {name} ---")
+                        parts.append(f"[COLLAPSED: {len(content)} chars, /recall {name}]")
+                        topic_chars_used += 60  # overhead for collapsed line
+                    else:
+                        parts.append(f"\n--- {name} ---")
+                        parts.append(content)
+                        topic_chars_used += len(content)
+                else:
+                    parts.append(f"\n--- {name} ---")
+                    parts.append(content)
 
         # Only the tail of the transcript — the rest is for dreaming
         entries = self.transcript.read_all()
@@ -309,7 +427,13 @@ files to understand project context and recent decisions.
                 text = e.get("content", "")
                 if len(text) > 600:
                     text = text[:600] + "…"
-                parts.append(f"[{role}] {text}")
+                line = f"[{role}] {text}"
+                if token_budget > 0 and transcript_budget > 0:
+                    transcript_budget -= len(line)
+                    if transcript_budget < 0:
+                        parts.append(f"[...{len(recent)} entries, use /context for full view]")
+                        break
+                parts.append(line)
 
         return "\n".join(parts)
 

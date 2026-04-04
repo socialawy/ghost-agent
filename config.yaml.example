@@ -126,6 +126,12 @@ dream:
   auto_interval_minutes: 30   # autoDream interval in daemon mode
   compact_threshold: 200      # Compact transcript when entries exceed this
 
+# Context management (Phase 5)
+context:
+  token_budget: 8000          # 0 = unlimited. When set, topics exceeding budget
+                              # are collapsed to one-line headers. Recently
+                              # referenced topics get priority for full inclusion.
+
 # KAIROS daemon settings
 daemon:
   tick_interval_seconds: 60   # How often the daemon wakes up

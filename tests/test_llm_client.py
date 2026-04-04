@@ -196,15 +196,15 @@ class TestCascadeBehavior:
 
     @patch("llm_client.time.sleep")
     @patch("llm_client.requests.post")
-    def test_400_does_not_cascade(self, mock_post, mock_sleep, cascade_config):
-        """400 Bad Request is fatal — should not cascade."""
+    def test_400_cascades_to_next_provider(self, mock_post, mock_sleep, cascade_config):
+        """400 Bad Request cascades — the prompt may work on a different model."""
         mock_post.return_value = self._make_error_response(400, "Bad Request")
         client = LLMClient(cascade_config)
 
         with pytest.raises(requests.exceptions.HTTPError):
             client.chat(messages=[{"role": "user", "content": "hi"}])
-        # Only tried once — no cascade for 400
-        assert mock_post.call_count == 1
+        # Tries both providers before giving up
+        assert mock_post.call_count == 2
 
     @patch("llm_client.time.sleep")
     @patch("llm_client.requests.post")

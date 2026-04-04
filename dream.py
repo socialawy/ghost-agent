@@ -10,6 +10,7 @@ Each phase is a separate, cheap LLM call with a tight prompt.
 
 import json
 import logging
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -698,7 +699,6 @@ class DreamEngine:
     @staticmethod
     def _extract_key_terms(text: str) -> set[str]:
         """Extract significant terms: numbers, proper nouns, file paths."""
-        import re
         terms = set()
         # Numbers (with optional commas): 107, 1,234, 865+
         terms.update(re.findall(r'\b\d[\d,]*\+?\b', text))
@@ -774,7 +774,6 @@ class DreamEngine:
             return []
 
         # Extract significant terms per topic (lowercase for matching)
-        import re
         topic_terms = {}
         for name, content in topics.items():
             words = set(w.lower() for w in re.findall(r'\b[A-Za-z][\w-]{3,}\b', content))
@@ -896,6 +895,98 @@ class DreamEngine:
 
         return split_topics
 
+    # ── Reactive Micro-Compaction ────────────────────────
+
+    def micro_compact(self, entries: list[dict], max_entries: int = 15) -> list[dict]:
+        """Compact the oldest half of entries into a summary entry.
+
+        Used inline during chat when transcript contribution dominates the
+        context budget. Returns a reduced list of entries.
+        """
+        if len(entries) <= max_entries:
+            return entries
+
+        # Split: compact older half, keep recent half
+        split_point = len(entries) // 2
+        old = entries[:split_point]
+        recent = entries[split_point:]
+
+        # Check cache first
+        cache_key_start = hash(json.dumps(old[0], sort_keys=True)) if old else 0
+        cache_key_end = hash(json.dumps(old[-1], sort_keys=True)) if old else 0
+        cached = self.memory.compact_cache.get(cache_key_start, cache_key_end)
+
+        if cached:
+            summary = cached
+        else:
+            summary_input = "\n".join(
+                f"[{e.get('role', '?')}] {e.get('content', '')[:200]}" for e in old
+            )
+            try:
+                summary = self._call(COMPACT_SYSTEM, summary_input, json_mode=False)
+                self.memory.compact_cache.put(cache_key_start, cache_key_end, summary)
+            except Exception as exc:
+                logger.warning("Micro-compact failed: %s", exc)
+                return entries  # Return original on failure
+
+        compact_entry = {
+            "ts": old[0].get("ts", ""),
+            "role": "system",
+            "content": f"[SUMMARY of {len(old)} entries] {summary}",
+            "event": "micro_compact",
+        }
+        return [compact_entry] + recent
+
+    @staticmethod
+    def snip_history(messages: list[dict], current_turn: str, max_messages: int = 40) -> list[dict]:
+        """Smart conversation windowing based on term overlap.
+
+        If early messages share zero significant terms with the current turn,
+        snip them instead of keeping a blind window.
+        """
+        if len(messages) <= max_messages:
+            return messages
+
+        # Extract significant terms from current turn (words > 3 chars, lowercase)
+        current_terms = set(
+            w.lower() for w in re.findall(r'\b[A-Za-z][\w-]{3,}\b', current_turn)
+        )
+        stopwords = {"this", "that", "with", "from", "have", "will", "been", "also",
+                     "more", "when", "only", "some", "than", "into", "each", "most",
+                     "they", "their", "about", "which", "would", "could", "should",
+                     "what", "your", "here", "just", "like", "does", "make"}
+        current_terms -= stopwords
+
+        if not current_terms:
+            return messages[-max_messages:]
+
+        # Score each message by term overlap with current turn
+        scored = []
+        for i, msg in enumerate(messages):
+            text = msg.get("content", "")
+            msg_terms = set(w.lower() for w in re.findall(r'\b[A-Za-z][\w-]{3,}\b', text))
+            msg_terms -= stopwords
+            overlap = len(current_terms & msg_terms)
+            scored.append((i, overlap, msg))
+
+        # Always keep last max_messages//2 messages (recent context)
+        guaranteed = len(messages) - max_messages // 2
+        result = []
+
+        for i, overlap, msg in scored:
+            if i >= guaranteed:
+                # Recent — always keep
+                result.append(msg)
+            elif overlap > 0:
+                # Relevant — keep
+                result.append(msg)
+
+        # If we're still over budget, truncate from the front
+        if len(result) > max_messages:
+            result = result[-max_messages:]
+
+        return result
+
     # ── Compaction (standalone, called by daemon) ─────────
 
     def compact(self, keep_recent: int = 100) -> dict:
@@ -1009,7 +1100,6 @@ class DreamEngine:
                         needle = v.get("claim", "").lower()
                         
                         # Better keyword-based matching
-                        import re
                         words = [w for w in re.split(r"\W+", needle) if len(w) > 3]
                         if not words:
                             v["verified"] = True # No keywords to check - assume OK?
@@ -1040,7 +1130,6 @@ class DreamEngine:
                     if registry and registry.exists():
                         content = registry.read_text(encoding="utf-8", errors="replace").lower()
                         # Extract project IDs or names from claim
-                        import re
                         terms = [t for t in re.split(r"\W+", v.get("claim", "")) if len(t) > 3]
                         v["verified"] = any(t.lower() in content for t in terms)
                         v["confidence"] = "high" if v["verified"] else "medium"
