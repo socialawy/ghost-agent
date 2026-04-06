@@ -1,6 +1,6 @@
 # Ghost Agent — User Manual
 
-**Version:** 1.6  
+**Version:** 1.6+  
 **Last updated:** April 2026
 
 ---
@@ -178,8 +178,12 @@ llm:
       base_url: "https://api.deepseek.com/v1"
       api_key: "${DEEPSEEK_API_KEY}"
       model: "deepseek-chat"
+      trust_env: false
 ```
 - This tries Ollama first (free, local), then Groq, then DeepSeek.
+- The same `providers:` format works for `dream_llm`.
+- By default, Ghost ignores shell proxy env vars for provider calls. Set `trust_env: true` only if you intentionally want to route a provider through your environment's proxy settings.
+- If your first provider is local (`localhost`), make sure the local server is actually running. Otherwise Ghost will cascade to the next provider if one is configured.
 
 ## Core Concepts
 
@@ -421,6 +425,16 @@ python ghost.py daemon
 - If the daemon crashes or is stopped, it resumes from the last
 checkpoint on next start. No data is lost — the transcript is
 append-only.
+
+### Dream-State Recovery
+
+- Dream progress is persisted separately in `.ghost/dream_state.json`.
+- On startup or manual `ghost dream`, Ghost now validates saved dream state before resuming:
+  - The state must be recent enough.
+  - Cursor values must still match the current transcript size.
+  - Resume scope must still reference sane topics.
+- If the saved state fails those checks, Ghost discards it cleanly and starts fresh instead of risking destructive recovery behavior.
+- `ghost status` now surfaces when a saved dream state exists and which phase it would resume from.
 
 ### Recommended Setup
 
@@ -677,6 +691,27 @@ You hit a provider's rate limit.
     - Switch to a provider with higher limits
     - Use provider cascade for automatic failover
     - Use Ollama for chat (zero rate limits)
+
+### "Provider unreachable" but the API should work
+
+- Check whether your shell has broken proxy variables set:
+  - `HTTP_PROXY`
+  - `HTTPS_PROXY`
+  - `ALL_PROXY`
+- Ghost now ignores those env vars by default for provider calls. If you explicitly need a proxy, set `trust_env: true` on that provider in `config.yaml`.
+- If the unreachable provider is local Ollama or LM Studio, verify the local server is running on the configured port.
+
+### Topics disappeared after a dream
+
+- This was the first real-world regression found during live Ghost operation.
+- Ghost now treats prune conservatively:
+  - It only considers removals inside the current dream scope.
+  - Recently updated topics are protected from deletion.
+  - If prune causes memory-quality degradation, Ghost restores the deleted topics.
+- If you ever need to inspect or recover manually:
+  - Check `.ghost/dream_state.json` for an interrupted cycle.
+  - Check `.ghost/dream_history/cycle_N/` for the last good snapshot of topic files.
+  - Run `ghost status` to confirm whether a saved dream state is still pending.
 
 ### Dream produces vague topics
 

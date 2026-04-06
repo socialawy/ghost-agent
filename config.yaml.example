@@ -63,6 +63,40 @@ llm:
   max_tokens: 4096
   temperature: 0.3
   min_interval: 3.0
+  json_mode_supported: true
+  trust_env: false
+
+# Recommended: use a provider cascade for chat so Ghost can keep going
+# even if one service is rate-limited or unavailable.
+# llm:
+#   providers:
+#     - provider: "openai"
+#       base_url: "http://localhost:11434/v1"
+#       api_key: "ollama"
+#       model: "phi4-mini"
+#       max_tokens: 2048
+#       temperature: 0.3
+#       min_interval: 0
+#       json_mode_supported: false
+#       trust_env: false
+#     - provider: "openai"
+#       base_url: "https://api.groq.com/openai/v1"
+#       api_key: "${GROQ_API_KEY}"
+#       model: "llama-3.3-70b-versatile"
+#       max_tokens: 4096
+#       temperature: 0.3
+#       min_interval: 1.0
+#       json_mode_supported: true
+#       trust_env: false
+#     - provider: "openai"
+#       base_url: "https://api.deepseek.com/v1"
+#       api_key: "${DEEPSEEK_API_KEY}"
+#       model: "deepseek-chat"
+#       max_tokens: 4096
+#       temperature: 0.3
+#       min_interval: 2.0
+#       json_mode_supported: true
+#       trust_env: false
 
 # Smarter model for dream consolidation (Gemini 2.0 Flash — free, fast, smart)
 dream_llm:
@@ -74,6 +108,38 @@ dream_llm:
   temperature: 0.2
   min_interval: 2
   json_mode_supported: true
+  trust_env: false
+
+# Recommended dream cascade:
+# dream_llm:
+#   providers:
+#     - provider: "openai"
+#       base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+#       api_key: "${GEMINI_API_KEY}"
+#       model: "gemini-2.0-flash"
+#       max_tokens: 8192
+#       temperature: 0.2
+#       min_interval: 2
+#       json_mode_supported: true
+#       trust_env: false
+#     - provider: "openai"
+#       base_url: "https://api.deepseek.com/v1"
+#       api_key: "${DEEPSEEK_API_KEY}"
+#       model: "deepseek-chat"
+#       max_tokens: 8192
+#       temperature: 0.2
+#       min_interval: 2
+#       json_mode_supported: true
+#       trust_env: false
+#     - provider: "openai"
+#       base_url: "https://api.openai.com/v1"
+#       api_key: "${OPENAI_API_KEY}"
+#       model: "gpt-4.1-mini"
+#       max_tokens: 8192
+#       temperature: 0.2
+#       min_interval: 2
+#       json_mode_supported: true
+#       trust_env: false
 
 # OPTION: OpenRouter Free Models (High Context / Privacy)
 # dream_llm:
@@ -147,3 +213,4 @@ daemon:
 #   model: "llama-3.3-70b-versatile"
 #   max_tokens: 8192
 #   temperature: 0.2
+#   trust_env: false

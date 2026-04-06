@@ -28,10 +28,13 @@ Ghost can "link" to external source files (like project registries or blueprints
 ## Features
 
 ### Scaling & High Availability (v1.2+)
-- **Provider Cascade**: Multi-tier failover (`llm.providers` list). Auth errors cascade immediately; rate limits retry then cascade. Parses Gemini/Groq error formats.
+- **Provider Cascade**: Multi-tier failover (`llm.providers` or `dream_llm.providers`). Auth errors cascade immediately; rate limits retry then cascade. Parses Gemini/Groq error formats.
+- **Proxy-Safe Defaults**: Providers ignore shell proxy environment variables by default unless `trust_env: true` is set. This avoids false "provider unreachable" failures caused by broken desktop proxy settings.
 - **Round-Robin Digestion**: Processes one linked source per dream cycle, rotating by priority (changed → stale). Prevents context overflow.
 - **Topic Auto-Splitting**: Topics over 3,000 chars are split into focused sub-topics with parent summaries.
 - **File Locking**: Platform-aware advisory locks (`msvcrt`/`fcntl`) for safe concurrent access.
+- **Safe Resume**: Saved `dream_state.json` is resumed only when it is recent and structurally valid. Stale or unsafe recovery state is discarded instead of being allowed to damage memory.
+- **Conservative Prune**: Topic deletion is scoped to the topics touched by the current dream. Ghost now prefers preserving standalone project knowledge over opportunistic cleanup.
 
 ### Dream Quality & Feedback (v1.3+)
 - **Quality Scoring**: Compares topics before/after each dream — detects shrinkage, lost key terms, deleted topics.
@@ -134,6 +137,59 @@ python ghost.py workspace search "authentication"
 python ghost.py daemon
 ```
 
+### Recommended Resilient Routing
+```yaml
+llm:
+  providers:
+    - provider: "openai"
+      base_url: "http://localhost:11434/v1"
+      api_key: "ollama"
+      model: "phi4-mini"
+      min_interval: 0
+      json_mode_supported: false
+      trust_env: false
+    - provider: "openai"
+      base_url: "https://api.groq.com/openai/v1"
+      api_key: "${GROQ_API_KEY}"
+      model: "llama-3.3-70b-versatile"
+      min_interval: 1.0
+      json_mode_supported: true
+      trust_env: false
+    - provider: "openai"
+      base_url: "https://api.deepseek.com/v1"
+      api_key: "${DEEPSEEK_API_KEY}"
+      model: "deepseek-chat"
+      min_interval: 2.0
+      json_mode_supported: true
+      trust_env: false
+
+dream_llm:
+  providers:
+    - provider: "openai"
+      base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      api_key: "${GEMINI_API_KEY}"
+      model: "gemini-2.0-flash"
+      min_interval: 2.0
+      json_mode_supported: true
+      trust_env: false
+    - provider: "openai"
+      base_url: "https://api.openai.com/v1"
+      api_key: "${OPENAI_API_KEY}"
+      model: "gpt-4.1-mini"
+      min_interval: 2.0
+      json_mode_supported: true
+      trust_env: false
+```
+
+Ghost will try providers in order. For local models, make sure the local server is actually running before expecting the first hop to succeed.
+
+### Operator Note
+The first real Ghost operator run exposed a live regression: a resumed dream plus global prune could delete valid leaf topics like `prim-1-math`. Ghost now treats resume and prune as safety-critical paths:
+- resume is validated before use
+- prune is scoped to touched topics
+- destructive deletions are rolled back if quality checks detect data loss
+- `ghost status` surfaces when a saved dream state is pending
+
 ## Integration Contract: [GHOST_SPEC.md](.ghost/GHOST_SPEC.md)
 Ghost provides a formal contract for any AI assistant (Claude Code, Windsurf, Cursor) to read and respect your workspace memory.
 Add this to your project's `.claude/instructions.md` or equivalent:
@@ -145,7 +201,10 @@ Add this to your project's `.claude/instructions.md` or equivalent:
 Ghost is designed for reliable long-term persistence.
 - **Verification Gates**: The engine verifies claims against your filesystem before promoting them to long-term knowledge.
 - **Confidence Metadata**: Interactions are tagged as `verified` (user/facts) or `unverified` (assistant speculation), ensuring a clean source of truth.
-- **122 Tests**: Comprehensive test suite covering memory, dream engine, LLM cascade, bridge HTTP, multi-workspace, and context management.
+- **Proxy Isolation**: By default, provider requests do not inherit shell proxy env vars. Set `trust_env: true` per provider only if you intentionally need a corporate or local proxy.
+- **Recovery Guardrails**: KAIROS validates saved dream state on startup and logs whether it will resume or discard it.
+- **Memory Preservation First**: Topic removals must survive local validation and quality scoring; Ghost now defaults to keeping knowledge unless redundancy is clearly proven.
+- **128 Tests**: Comprehensive test suite covering memory, dream engine, prune/resume safety, LLM cascade, bridge HTTP, multi-workspace, and context management.
 
 ---
 

@@ -1,3 +1,19 @@
+## [Unreleased]
+
+### Provider Resilience
+- **Proxy Bypass by Default**: `LLMClient` now ignores shell-level `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` environment variables unless a provider explicitly sets `trust_env: true`. This prevents broken desktop proxy settings from making all configured providers appear unreachable.
+- **Chat Uses the Same Cascade Path**: Interactive chat inherits the same provider-cascade behavior as dreams when `llm.providers` is configured.
+- **Docs Refresh**: README, user manual, and config example now document provider cascades for both chat and dream workloads, plus `trust_env` for environments with unstable proxy settings.
+
+### Dream Safety & Recovery
+- **Conservative Prune**: Topic deletion is now scoped to the topics touched by the current dream. Ghost no longer removes standalone or weakly connected project topics just because they are absent from a narrow consolidate batch.
+- **Safe Resume Validation**: Saved `dream_state.json` is resumed only when it is structurally valid, recent enough, and still references a sane topic scope. Unsafe or stale saved state is discarded cleanly.
+- **Quality Rollback for Deletions**: If prune still causes topic deletions that degrade memory quality, Ghost restores the deleted topics and keeps the cycle non-destructive.
+- **Index Retention**: Rebuilding `MEMORY.md` now preserves untouched topic nodes so narrow dreams do not silently erase unrelated project topics from the memory graph.
+- **Daemon Startup Guardrails**: KAIROS inspects saved dream state on startup, logs whether it will resume or discard it, and uses `last_read_mtime` as the fallback baseline for source-change detection to avoid noisy false-positive startup events.
+
+---
+
 ## [1.6.0] - 2026-04-04
 
 ### Continuous Context Management
