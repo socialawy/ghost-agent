@@ -17,6 +17,7 @@ class TestProviderConfig:
         assert pc.max_tokens == 4096
         assert pc.temperature == 0.3
         assert pc.json_mode_supported is True
+        assert pc.trust_env is False
 
     def test_custom_values(self):
         pc = _ProviderConfig({
@@ -104,7 +105,7 @@ class TestParseRetryAfter:
 
 
 class TestCascadeBehavior:
-    """Test provider cascade using mocked requests.post."""
+    """Test provider cascade using mocked requests.Session.post."""
 
     def _make_ok_response(self, content="test response"):
         resp = MagicMock()
@@ -129,7 +130,7 @@ class TestCascadeBehavior:
         return resp
 
     @patch("llm_client.time.sleep")
-    @patch("llm_client.requests.post")
+    @patch("llm_client.requests.Session.post")
     def test_single_provider_success(self, mock_post, mock_sleep, mock_config):
         mock_post.return_value = self._make_ok_response("hello")
         client = LLMClient(mock_config)
@@ -139,7 +140,7 @@ class TestCascadeBehavior:
         assert mock_post.call_count == 1
 
     @patch("llm_client.time.sleep")
-    @patch("llm_client.requests.post")
+    @patch("llm_client.requests.Session.post")
     def test_cascade_on_auth_error(self, mock_post, mock_sleep, cascade_config):
         mock_post.side_effect = [
             self._make_error_response(401, "Unauthorized"),
@@ -152,7 +153,7 @@ class TestCascadeBehavior:
         assert mock_post.call_count == 2
 
     @patch("llm_client.time.sleep")
-    @patch("llm_client.requests.post")
+    @patch("llm_client.requests.Session.post")
     def test_cascade_on_429_retries_exhausted(self, mock_post, mock_sleep, cascade_config):
         # Provider 1: 4 consecutive 429s (max_retries=4), then cascade
         error_resps = [self._make_error_response(429, "rate limited")] * 4
@@ -167,7 +168,7 @@ class TestCascadeBehavior:
         assert mock_post.call_count == 5
 
     @patch("llm_client.time.sleep")
-    @patch("llm_client.requests.post")
+    @patch("llm_client.requests.Session.post")
     def test_cascade_on_server_error(self, mock_post, mock_sleep, cascade_config):
         mock_post.side_effect = [
             self._make_error_response(500, "Internal Server Error"),
@@ -182,7 +183,7 @@ class TestCascadeBehavior:
         assert result == "recovered"
 
     @patch("llm_client.time.sleep")
-    @patch("llm_client.requests.post")
+    @patch("llm_client.requests.Session.post")
     def test_all_providers_exhausted_raises(self, mock_post, mock_sleep, cascade_config):
         # Both providers return 500 for all retries
         mock_post.side_effect = [
@@ -195,7 +196,7 @@ class TestCascadeBehavior:
             client.chat(messages=[{"role": "user", "content": "hi"}])
 
     @patch("llm_client.time.sleep")
-    @patch("llm_client.requests.post")
+    @patch("llm_client.requests.Session.post")
     def test_400_cascades_to_next_provider(self, mock_post, mock_sleep, cascade_config):
         """400 Bad Request cascades — the prompt may work on a different model."""
         mock_post.return_value = self._make_error_response(400, "Bad Request")
@@ -207,7 +208,7 @@ class TestCascadeBehavior:
         assert mock_post.call_count == 2
 
     @patch("llm_client.time.sleep")
-    @patch("llm_client.requests.post")
+    @patch("llm_client.requests.Session.post")
     def test_long_retry_after_cascades_immediately(self, mock_post, mock_sleep, cascade_config):
         """If Retry-After > 120s, cascade immediately without retrying."""
         resp_429 = self._make_error_response(429, "rate limited")
@@ -227,3 +228,15 @@ class TestCascadeBehavior:
         assert result == "quick fallback"
         # Only 1 attempt on provider 1 (immediate cascade), then 1 on provider 2
         assert mock_post.call_count == 2
+
+    @patch("llm_client.requests.Session")
+    def test_openai_session_uses_trust_env_default_false(self, mock_session_cls, mock_config):
+        session = MagicMock()
+        session.post.return_value = self._make_ok_response("ok")
+        mock_session_cls.return_value = session
+
+        client = LLMClient(mock_config)
+        result = client.chat(messages=[{"role": "user", "content": "hi"}], max_retries=1)
+
+        assert result == "ok"
+        assert session.trust_env is False

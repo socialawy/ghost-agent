@@ -1,6 +1,7 @@
 """Tests for the 4-phase dream engine (dream.py)."""
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -9,6 +10,7 @@ import pytest
 from memory import Memory
 from llm_client import LLMClient, RateLimitError
 from dream import DreamEngine
+from ghost import KairosDaemon
 
 
 @pytest.fixture
@@ -258,7 +260,7 @@ class TestDreamCycle:
             "new_cursor": cursor,
             "entries": entries,
             "phases": {"orient": sample_orient_result},
-            "started_at": "2026-04-01T00:00:00",
+            "started_at": datetime.now(timezone.utc).isoformat(),
         }
         engine.memory.set_dream_state(state)
 
@@ -273,6 +275,136 @@ class TestDreamCycle:
         assert result["status"] == "ok"
         # Orient cached + Gather skipped = only consolidate + prune
         assert mock_call.call_count == 2
+
+    @patch.object(DreamEngine, "_call")
+    def test_discards_stale_saved_state_before_fresh_dream(self, mock_call, engine, sample_orient_result, sample_consolidate_result):
+        for i in range(5):
+            engine.memory.transcript.append(role="user", content=f"fresh {i}")
+
+        entries, cursor = engine.memory.transcript.read_since(0)
+        state = {
+            "cursor": 0,
+            "new_cursor": cursor,
+            "entries": entries,
+            "phases": {"orient": sample_orient_result},
+            "started_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
+        }
+        engine.memory.set_dream_state(state)
+
+        mock_call.side_effect = [
+            sample_orient_result,
+            sample_consolidate_result,
+            {"demotions": [], "removals": [], "stale_observations": [], "prune_log": "clean"},
+        ]
+
+        result = engine.dream()
+        assert result["status"] == "ok"
+        assert result["cycle"] == 1
+        assert engine.memory.get_dream_state() is None
+        assert mock_call.call_count == 3
+
+    @patch.object(DreamEngine, "_call")
+    def test_resume_prune_only_scopes_to_saved_topics(self, mock_call, engine):
+        engine.memory.transcript.append(role="system", content="resume me")
+        _, new_cursor = engine.memory.transcript.read_since(0)
+        engine.memory.topics.write("co-workspace", "# Co Workspace\nShared memory filesystem.")
+        engine.memory.topics.write("prim-1-math", "# Prim\nStandalone project topic.")
+        engine.memory.index.write("# Ghost Agent Memory Index\nDream cycle: 0\n")
+
+        state = {
+            "cursor": 0,
+            "new_cursor": new_cursor,
+            "entries": [{"role": "system", "content": "resume me"}],
+            "phases": {
+                "orient": {
+                    "deltas": [{"summary": "co-workspace changed"}],
+                    "topics_to_load": ["co-workspace"],
+                    "topics_to_create": [],
+                    "orient_summary": "delta",
+                },
+                "gather": {
+                    "load": ["co-workspace"],
+                    "skip": ["prim-1-math"],
+                    "reasoning": "scoped",
+                },
+                "consolidate": {
+                    "topic_updates": [
+                        {"topic": "co-workspace", "action": "update", "content": "# Co Workspace\nUpdated"}
+                    ],
+                    "index_graph": {
+                        "nodes": [{"id": "co-workspace", "label": "Co Workspace", "type": "project"}],
+                        "edges": [],
+                    },
+                    "active_context": "co-workspace",
+                    "pending_observations": [],
+                    "verifications": [],
+                    "consolidate_log": "updated co-workspace",
+                },
+            },
+            "scope_topics": ["co-workspace"],
+            "recent_topics": ["co-workspace"],
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        engine.memory.set_dream_state(state)
+
+        mock_call.return_value = {
+            "demotions": [],
+            "removals": [{"topic": "prim-1-math", "reason": "no connections to other topics"}],
+            "stale_observations": [],
+            "prune_log": "pruned",
+        }
+
+        result = engine.dream()
+        assert result["status"] == "ok"
+        assert engine.memory.topics.read("prim-1-math") is not None
+
+    @patch.object(DreamEngine, "_call")
+    def test_quality_guard_restores_deleted_topics(self, mock_call, engine):
+        for i in range(5):
+            engine.memory.transcript.append(role="user", content=f"entry {i}")
+
+        duplicate_content = "# Shared Topic\nOriginal content with stable terms and shared structure"
+        engine.memory.topics.write("co-workspace", duplicate_content)
+        engine.memory.topics.write("prim-1-math", duplicate_content)
+
+        orient = {
+            "deltas": [{"summary": "update co-workspace"}],
+            "topics_to_load": ["co-workspace", "prim-1-math"],
+            "topics_to_create": [],
+            "orient_summary": "update",
+        }
+        consolidate = {
+            "topic_updates": [
+                {
+                    "topic": "co-workspace",
+                    "action": "update",
+                    "content": "# Shared Topic\nOriginal content with stable terms and shared structure\nAdditional update.",
+                }
+            ],
+            "index_graph": {
+                "nodes": [{"id": "co-workspace", "label": "Co Workspace", "type": "project"}],
+                "edges": [],
+            },
+            "active_context": "workspace update",
+            "pending_observations": [],
+            "verifications": [],
+            "consolidate_log": "updated",
+        }
+        prune = {
+            "demotions": [],
+            "removals": [{"topic": "prim-1-math", "reason": "duplicate of co-workspace"}],
+            "stale_observations": [],
+            "prune_log": "pruned",
+        }
+
+        mock_call.side_effect = [orient, consolidate, prune]
+
+        result = engine.dream()
+        quality = result["quality"]
+        assert quality["verdict"] == "clean"
+        assert "prim-1-math" in quality.get("rollback_restored_topics", [])
+        assert engine.memory.topics.read("co-workspace") is not None
+        assert engine.memory.topics.read("prim-1-math") is not None
 
 
 class TestQualityScoring:
@@ -316,6 +448,63 @@ class TestQualityScoring:
         assert "Grid" in terms  # Capitalized word
         assert "GitHub" in terms  # CamelCase
         assert "E:\\co\\GRID" in terms  # File path
+
+
+class TestIndexRetention:
+    def test_rebuild_index_keeps_existing_topics_not_in_consolidate_graph(self, engine, sample_consolidate_result):
+        engine.memory.topics.write("co-workspace", "content")
+        engine.memory.topics.write("prim-1-math", "content")
+        engine.memory.index.write(
+            "# Ghost Agent Memory Index\n"
+            "Last updated: now\n"
+            "Dream cycle: 0\n\n"
+            "## Topic Graph\n"
+            "### Nodes\n"
+            "- **[co-workspace]** Co Workspace `project`\n"
+            "- **[prim-1-math]** Prim-1-Math `project`\n"
+        )
+
+        engine._rebuild_index(sample_consolidate_result)
+        index = engine.memory.index.read()
+        assert "**[co-workspace]**" in index
+        assert "**[prim-1-math]**" in index
+
+
+class TestDaemonStartupSafety:
+    def test_daemon_discards_stale_dream_state_on_startup(self, tmp_path):
+        state_dir = tmp_path / ".ghost"
+        mem = Memory(state_dir)
+        mem.transcript.append(role="user", content="hello")
+        mem.set_dream_state({
+            "cursor": 0,
+            "new_cursor": 1,
+            "entries": [{"role": "user", "content": "hello"}],
+            "phases": {"orient": {"deltas": []}},
+            "started_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
+        })
+
+        config = {
+            "state_dir": str(state_dir),
+            "workspace_root": str(tmp_path),
+            "llm": {
+                "provider": "openai",
+                "api_key": "test",
+                "base_url": "https://example.com/v1",
+                "model": "test",
+                "min_interval": 0,
+            },
+            "dream": {"min_new_entries": 5, "auto_interval_minutes": 30, "compact_threshold": 200},
+            "daemon": {"tick_interval_seconds": 60, "watch_paths": []},
+        }
+
+        with patch("ghost.LLMClient"), patch("ghost.MasterIndex"), patch("signal.signal"), patch("time.sleep"):
+            daemon = KairosDaemon(config)
+            daemon.running = False
+            daemon.run()
+
+        assert mem.get_dream_state() is None
+        entries = mem.transcript.read_all()
+        assert any(e.get("event") == "dream_state_discarded" for e in entries)
 
 
 class TestCrossLinkGraph:
