@@ -195,6 +195,27 @@ Ghost provides a formal contract for any AI assistant (Claude Code, Windsurf, Cu
 Add this to your project's `.claude/instructions.md` or equivalent:
 > *Before starting work, read .ghost/MEMORY.md and relevant .ghost/topics/*.md files to understand project context and recent decisions.*
 
+### Logging Contract For Any Agent
+Use Ghost as your memory layer, not as another agent-owned notebook:
+- Agents should write raw facts through `ghost inject`.
+- Long-running logs should live in project files and be registered once with `ghost link`.
+- Agents should never hand-edit `.ghost/MEMORY.md` or `.ghost/topics/*.md`; those are synthesized outputs and may be rewritten by the dream engine.
+
+Recommended prompt snippet for any coding agent:
+> *When you finish a meaningful step, log a factual Ghost update with `python E:\co\ghost-agent\ghost.py inject "<project>: <what changed>"`. For long dev logs, write them in the project repo and let Ghost ingest them via `ghost link`. Do not edit `.ghost/MEMORY.md` or `.ghost/topics/*` directly.*
+
+Cross-project command options:
+```powershell
+# Direct Python entrypoint from any repo
+python E:\co\ghost-agent\ghost.py inject "prim-1-math: added Exam Practice caching"
+
+# uv-based entrypoint for non-Python repos or shared tooling
+E:\uv\bin\uv.exe run --project E:\co\ghost-agent python E:\co\ghost-agent\ghost.py inject "prim-1-math: added Exam Practice caching"
+
+# Register a long-lived project log once
+python E:\co\ghost-agent\ghost.py link E:\co\prim-1-math\docs\DEVLOG.md
+```
+
 ---
 
 ## Hardening & Security

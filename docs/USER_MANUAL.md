@@ -620,6 +620,34 @@ Read these files for my project context:
 - .ghost/topics/*.md (detailed topic files)
 ```
 
+### Multi-Agent Logging Contract
+
+- Let each tool keep its own local memory if it wants, but log shared project facts into Ghost.
+- Use `ghost inject` for short factual milestones.
+- Use `ghost link` for long-lived project logs such as `DEVLOG.md`, release notes, or registry files.
+- Do not hand-edit `.ghost/MEMORY.md` or `.ghost/topics/*.md`. Those files are Ghost's synthesized memory and can be rewritten during a dream cycle.
+
+Recommended instruction for any agent:
+```text
+Before starting work, read .ghost/MEMORY.md and relevant .ghost/topics/*.md.
+When you finish a meaningful step, log a factual update with:
+python E:\co\ghost-agent\ghost.py inject "<project>: <what changed>"
+For long dev logs, write them in the project repo and let Ghost ingest them via ghost link.
+Do not edit .ghost/MEMORY.md or .ghost/topics/* directly.
+```
+
+Cross-project command variants:
+```powershell
+# Works from any project if Python is on PATH
+python E:\co\ghost-agent\ghost.py inject "tiny-museum: refined mobile layout"
+
+# Good default when the current repo is not Python-based
+E:\uv\bin\uv.exe run --project E:\co\ghost-agent python E:\co\ghost-agent\ghost.py inject "tiny-museum: refined mobile layout"
+
+# Register a durable source file once
+python E:\co\ghost-agent\ghost.py link E:\co\prim-1-math\docs\DEVLOG.md
+```
+
 ### Shell Integration
 
 ```bash
