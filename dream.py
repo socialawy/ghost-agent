@@ -230,6 +230,8 @@ Output only the summary text, no preamble.
 class DreamEngine:
     """4-phase memory consolidation engine."""
 
+    MAX_RESUME_AGE_SECONDS = 6 * 60 * 60
+
     def __init__(
         self,
         memory: Memory,
@@ -252,6 +254,150 @@ class DreamEngine:
         except Exception:
             pass
         return 0
+
+    def inspect_saved_state(self) -> dict:
+        """Inspect persisted dream state and decide whether it is safe to resume."""
+        state = self.memory.get_dream_state()
+        if not state:
+            return {"status": "none"}
+
+        required = {"cursor", "new_cursor", "entries", "phases", "started_at"}
+        missing = sorted(required - set(state.keys()))
+        if missing:
+            return {"status": "discard", "reason": f"missing required keys: {', '.join(missing)}"}
+
+        try:
+            started = datetime.fromisoformat(state["started_at"])
+            age_seconds = (datetime.now(timezone.utc) - started).total_seconds()
+        except Exception:
+            return {"status": "discard", "reason": "invalid started_at timestamp"}
+
+        if age_seconds > self.MAX_RESUME_AGE_SECONDS:
+            return {
+                "status": "discard",
+                "reason": f"saved state is too old ({int(age_seconds)}s > {self.MAX_RESUME_AGE_SECONDS}s)",
+                "age_seconds": age_seconds,
+            }
+
+        transcript_size = self.memory.transcript.byte_size()
+        if state.get("new_cursor", 0) > transcript_size:
+            return {
+                "status": "discard",
+                "reason": f"saved cursor {state.get('new_cursor', 0)} exceeds transcript size {transcript_size}",
+                "age_seconds": age_seconds,
+            }
+
+        phases = state.get("phases", {})
+        phase_order = ["orient", "gather", "consolidate", "split", "prune", "quality", "cross_link"]
+        completed = [p for p in phase_order if p in phases]
+        last_phase = completed[-1] if completed else "none"
+
+        scoped_topics = set(state.get("scope_topics", []))
+        recent_topics = set(state.get("recent_topics", []))
+        if last_phase in {"consolidate", "split", "prune", "quality", "cross_link"}:
+            if not scoped_topics and not recent_topics:
+                return {
+                    "status": "discard",
+                    "reason": f"resume from {last_phase} requires scope_topics or recent_topics",
+                    "age_seconds": age_seconds,
+                    "phase": last_phase,
+                }
+
+        missing_topics = [
+            topic for topic in scoped_topics
+            if self.memory.topics.read(topic) is None and topic not in recent_topics
+        ]
+        if missing_topics:
+            return {
+                "status": "discard",
+                "reason": f"resume scope references missing topics: {', '.join(sorted(missing_topics))}",
+                "age_seconds": age_seconds,
+                "phase": last_phase,
+            }
+
+        return {
+            "status": "resume",
+            "state": state,
+            "age_seconds": age_seconds,
+            "phase": last_phase,
+        }
+
+    @staticmethod
+    def _topic_label(slug: str) -> str:
+        return " ".join(part.capitalize() for part in slug.split("-")) or slug
+
+    def _merge_state_scope(self, state: dict, orient: Optional[dict] = None,
+                           gather: Optional[dict] = None, consolidate: Optional[dict] = None):
+        """Persist the currently-touched topic scope into saved dream state."""
+        scope_topics = set(state.get("scope_topics", []))
+        recent_topics = set(state.get("recent_topics", []))
+
+        if orient:
+            scope_topics.update(orient.get("topics_to_load", []))
+            scope_topics.update(orient.get("topics_to_create", []))
+        if gather:
+            scope_topics.update(gather.get("load", []))
+        if consolidate:
+            updated = {u.get("topic") for u in consolidate.get("topic_updates", []) if u.get("topic")}
+            scope_topics.update(updated)
+            recent_topics.update(updated)
+
+        state["scope_topics"] = sorted(t for t in scope_topics if t)
+        state["recent_topics"] = sorted(t for t in recent_topics if t)
+
+    @staticmethod
+    def _tokenize_topic_content(text: str) -> set[str]:
+        return {
+            w.lower() for w in re.findall(r"\b[a-zA-Z][\w-]{3,}\b", text)
+            if len(w) > 3
+        }
+
+    def _validate_topic_removal(
+        self,
+        topic: str,
+        reason: str,
+        all_topics: dict[str, str],
+        scope_topics: set[str],
+        recent_topics: set[str],
+    ) -> tuple[bool, str]:
+        """Require strong local evidence before deleting a topic."""
+        if topic not in all_topics:
+            return False, "topic does not exist"
+        if topic not in scope_topics:
+            return False, "topic is outside the current prune scope"
+        if topic in recent_topics:
+            return False, "topic was updated in this dream cycle"
+
+        reason_l = reason.lower()
+        allowed_signals = ("duplicate", "duplicated", "redundant", "superseded", "empty")
+        if not any(sig in reason_l for sig in allowed_signals):
+            return False, "removal reason is not strong enough"
+
+        content = (all_topics.get(topic) or "").strip()
+        if "empty" in reason_l:
+            if len(content) < 50:
+                return True, "topic is effectively empty"
+            return False, "topic is not empty enough to delete safely"
+
+        topic_words = self._tokenize_topic_content(content)
+        if not topic_words:
+            return False, "topic content has no comparable structure"
+
+        comparison_topics = (scope_topics | recent_topics) - {topic}
+        for other in sorted(comparison_topics):
+            other_content = all_topics.get(other, "")
+            if not other_content:
+                continue
+            other_words = self._tokenize_topic_content(other_content)
+            if not other_words:
+                continue
+            overlap = len(topic_words & other_words)
+            union = len(topic_words | other_words)
+            jaccard = overlap / union if union else 0.0
+            if topic_words <= other_words or jaccard >= 0.85:
+                return True, f"topic strongly overlaps with {other} (jaccard={jaccard:.2f})"
+
+        return False, "no local evidence that topic is redundant"
 
     # ── LLM call helper ──────────────────────────────────
 
@@ -331,15 +477,29 @@ class DreamEngine:
     def dream(self) -> dict:
         """Run one 4-phase consolidation cycle with persistence."""
         # ── 1. Load or initialize state ───────────────────
-        state = self.memory.get_dream_state()
-        
-        if state:
-            logger.info("Resuming dream from saved state (cursor: %d)", state["cursor"])
+        inspect = self.inspect_saved_state()
+        state = None
+        resume_active = False
+
+        if inspect["status"] == "resume":
+            state = inspect["state"]
+            resume_active = True
+            state["resume_active"] = True
+            state["resume_phase"] = inspect.get("phase")
+            logger.info(
+                "Resuming dream from saved state (cursor: %d, phase: %s, age: %ds)",
+                state["cursor"],
+                inspect.get("phase", "unknown"),
+                int(inspect.get("age_seconds", 0)),
+            )
             cursor = state["cursor"]
             new_cursor = state["new_cursor"]
-            # We don't re-read from transcript if resuming, use the entries from state
             new_entries = state["entries"]
         else:
+            if inspect["status"] == "discard":
+                logger.warning("Discarding unsafe saved dream state: %s", inspect["reason"])
+                self.memory.set_dream_state(None)
+
             cursor = self.memory.get_dream_cursor()
             new_entries, new_cursor = self.memory.transcript.read_since(cursor)
             if not new_entries:
@@ -352,6 +512,7 @@ class DreamEngine:
                 "entries": new_entries,
                 "phases": {},
                 "started_at": datetime.now(timezone.utc).isoformat(),
+                "resume_active": False,
             }
             self.memory.set_dream_state(state)
 
@@ -367,6 +528,7 @@ class DreamEngine:
                 logger.info("Phase 1/4: Orient")
                 orient = self._phase_orient(new_entries)
                 state["phases"]["orient"] = orient
+                self._merge_state_scope(state, orient=orient)
                 self.memory.set_dream_state(state)
             else:
                 orient = state["phases"]["orient"]
@@ -383,6 +545,7 @@ class DreamEngine:
                 logger.info("Phase 2/4: Gather")
                 gather = self._phase_gather(orient)
                 state["phases"]["gather"] = gather
+                self._merge_state_scope(state, gather=gather)
                 self.memory.set_dream_state(state)
             else:
                 gather = state["phases"]["gather"]
@@ -392,6 +555,7 @@ class DreamEngine:
                 logger.info("Phase 3/4: Consolidate")
                 consolidate = self._phase_consolidate(orient, gather, new_entries)
                 state["phases"]["consolidate"] = consolidate
+                self._merge_state_scope(state, consolidate=consolidate)
                 self.memory.set_dream_state(state)
             else:
                 consolidate = state["phases"]["consolidate"]
@@ -403,10 +567,17 @@ class DreamEngine:
                 if split_topics:
                     self.memory.set_dream_state(state)
 
+            pre_prune_topics = self.memory.topics.read_all()
+            pre_prune_index = self.memory.index.read()
+
             # ── PHASE 4: PRUNE ───────────────────────────
             if "prune" not in state["phases"]:
                 logger.info("Phase 4/4: Prune")
-                prune = self._phase_prune()
+                prune = self._phase_prune(
+                    scope_topics=set(state.get("scope_topics", [])),
+                    recent_topics=set(state.get("recent_topics", [])),
+                    resume_recovery=resume_active,
+                )
                 state["phases"]["prune"] = prune
                 self.memory.set_dream_state(state)
             else:
@@ -416,6 +587,32 @@ class DreamEngine:
             if "quality" not in state["phases"]:
                 post_dream_topics = self.memory.topics.read_all()
                 quality = self._score_quality(pre_dream_topics, post_dream_topics)
+                deleted_topics = [
+                    warning for warning in quality.get("warnings", [])
+                    if "was deleted" in warning
+                ]
+                if deleted_topics and prune.get("applied_removals"):
+                    restored = []
+                    for topic in prune.get("applied_removals", []):
+                        old_content = pre_prune_topics.get(topic)
+                        if old_content:
+                            self.memory.topics.write(topic, old_content)
+                            restored.append(topic)
+                    if restored:
+                        self.memory.index.write(pre_prune_index)
+                        logger.warning(
+                            "Quality guard restored %d topic(s) after destructive prune: %s",
+                            len(restored),
+                            ", ".join(sorted(restored)),
+                        )
+                        quality = self._score_quality(pre_dream_topics, self.memory.topics.read_all())
+                        quality["rollback_restored_topics"] = restored
+                        prune.setdefault("blocked_removals", [])
+                        prune["blocked_removals"].extend(restored)
+                        prune["applied_removals"] = [
+                            topic for topic in prune.get("applied_removals", [])
+                            if topic not in restored
+                        ]
                 state["phases"]["quality"] = quality
                 if quality.get("warnings"):
                     self.memory.set_dream_state(state)
@@ -582,6 +779,7 @@ class DreamEngine:
 
             meta["last_read"] = datetime.now(timezone.utc).isoformat()
             meta["last_read_mtime"] = current_mtime
+            meta["last_seen_mtime"] = current_mtime
             sources_file.write_text(json.dumps(sources, indent=2))
 
             logger.info("Round-robin source: %s (%d chars, %d sources total)",
@@ -646,7 +844,7 @@ class DreamEngine:
 
     # ── Phase 4: Prune ───────────────────────────────────
 
-    def _phase_prune(self) -> dict:
+    def _phase_prune(self, scope_topics: set[str], recent_topics: set[str], resume_recovery: bool = False) -> dict:
         current_index = self.memory.index.read()
         all_topics = {}
         for t in self.memory.topics.list_topics():
@@ -658,20 +856,44 @@ class DreamEngine:
         for name, preview in all_topics.items():
             topic_previews += f"\n### {name}\n{preview}\n"
 
+        scope_list = ", ".join(sorted(scope_topics)) or "(none)"
+        recent_list = ", ".join(sorted(recent_topics)) or "(none)"
+        scope_note = (
+            "Resume recovery is active. Only consider removals for topics in the prune scope. "
+            "Do not propose deleting untouched or weakly connected leaf topics."
+            if resume_recovery else
+            "Only consider removals for topics in the prune scope. Keep standalone project topics unless they are truly empty or redundant."
+        )
+
         prompt = (
             f"## Current Memory Index\n{current_index}\n\n"
-            f"## Topic Previews (first 500 chars)\n{topic_previews}"
+            f"## Topic Previews (first 500 chars)\n{topic_previews}\n\n"
+            f"## Prune Scope\n{scope_note}\n"
+            f"- Scope topics: {scope_list}\n"
+            f"- Recently updated topics: {recent_list}\n"
         )
 
         result = self._call(PRUNE_SYSTEM, prompt)
 
-        # Apply removals
+        applied_removals = []
+        blocked_removals = []
+
+        # Apply removals conservatively
         for removal in result.get("removals", []):
             topic = removal.get("topic", "")
+            reason = removal.get("reason", "")
             topic_path = self.memory.topics.directory / f"{topic}.md"
             if topic_path.exists():
+                allowed, guard_reason = self._validate_topic_removal(
+                    topic, reason, all_topics, scope_topics, recent_topics
+                )
+                if not allowed:
+                    blocked_removals.append({"topic": topic, "reason": guard_reason})
+                    logger.info("Blocked prune removal: %s — %s", topic, guard_reason)
+                    continue
                 topic_path.unlink()
-                logger.info("Pruned topic: %s — %s", topic, removal.get("reason", ""))
+                applied_removals.append(topic)
+                logger.info("Pruned topic: %s — %s", topic, reason)
 
         # Apply demotions (rewrite topic with demotion note)
         for demotion in result.get("demotions", []):
@@ -692,6 +914,8 @@ class DreamEngine:
                 self.memory.topics.write(topic, content + note)
                 logger.info("Demoted claim in %s: %s", topic, claim)
 
+        result["applied_removals"] = applied_removals
+        result["blocked_removals"] = blocked_removals
         return result
 
     # ── Quality Scoring ──────────────────────────────────
@@ -1166,11 +1390,43 @@ class DreamEngine:
 
     def _rebuild_index(self, result: dict):
         now = datetime.now(timezone.utc).isoformat()
+        previous_index = self.memory.index.read()
         graph = result.get("index_graph", {})
         nodes = graph.get("nodes", [])
         edges = graph.get("edges", [])
         pending = result.get("pending_observations", [])
         active = result.get("active_context", "unknown")
+
+        existing_nodes = {}
+        for line in previous_index.splitlines():
+            m = re.match(r"- \*\*\[([^\]]+)\]\*\* (.+?) `([^`]+)`$", line.strip())
+            if m:
+                existing_nodes[m.group(1)] = {"label": m.group(2), "type": m.group(3)}
+
+        node_map = {
+            n.get("id", "?"): {
+                "id": n.get("id", "?"),
+                "label": n.get("label", n.get("id", "?")),
+                "type": n.get("type", "project"),
+            }
+            for n in nodes if n.get("id")
+        }
+
+        for topic in self.memory.topics.list_topics():
+            if topic not in node_map:
+                existing = existing_nodes.get(topic, {})
+                node_map[topic] = {
+                    "id": topic,
+                    "label": existing.get("label", self._topic_label(topic)),
+                    "type": existing.get("type", "project"),
+                }
+
+        nodes = [node_map[key] for key in sorted(node_map.keys())]
+        valid_ids = set(node_map.keys())
+        edges = [
+            e for e in edges
+            if e.get("from") in valid_ids and e.get("to") in valid_ids
+        ]
 
         lines = [
             "# Ghost Agent Memory Index",

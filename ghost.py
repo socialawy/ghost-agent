@@ -167,6 +167,7 @@ def cmd_status(config: dict):
     """Print memory system status."""
     mem = Memory(Path(config.get("state_dir", ".ghost")))
     s = mem.status()
+    dream_state = mem.get_dream_state()
 
     daemon_file = Path(config.get("state_dir", ".ghost")) / "daemon.json"
     daemon_state = None
@@ -189,8 +190,20 @@ def cmd_status(config: dict):
         f"Transcript size:    {s['transcript_bytes']:>11} B",
         f"Dream cursor:       {s['dream_cursor']:>14}",
         f"Undreamed entries:  {s['undreamed_entries']:>14}",
-        "---"
     ])
+
+    if dream_state:
+        phases = list(dream_state.get("phases", {}).keys())
+        active_phase = phases[-1] if phases else "initialized"
+        started = str(dream_state.get("started_at", "unknown"))[:19]
+        rows.extend([
+            "---",
+            f"Dream state:       {'saved':>14}",
+            f"Resume phase:      {active_phase:>14}",
+            f"State started:     {started:>14}",
+        ])
+
+    rows.append("---")
 
     if daemon_state:
         last_tick = daemon_state.get("last_tick", "never")
@@ -747,6 +760,22 @@ class KairosDaemon:
         signal.signal(signal.SIGINT, self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
 
+        state_check = self.dream_engine.inspect_saved_state()
+        if state_check["status"] == "discard":
+            logger.warning("Discarding stale/unsafe dream state on daemon startup: %s", state_check["reason"])
+            self.mem.set_dream_state(None)
+            self.mem.transcript.append(
+                role="system",
+                content=f"[KAIROS] Discarded unsafe dream state: {state_check['reason']}",
+                event="dream_state_discarded",
+            )
+        elif state_check["status"] == "resume":
+            logger.info(
+                "Pending dream state retained for resume (phase=%s, age=%ds)",
+                state_check.get("phase", "unknown"),
+                int(state_check.get("age_seconds", 0)),
+            )
+
         logger.info("KAIROS daemon starting (tick every %ds, dream every %ds)",
                     self.tick_interval, self.dream_interval)
 
@@ -820,7 +849,8 @@ class KairosDaemon:
                     path = Path(meta["path"])
                     if path.exists():
                         current = path.stat().st_mtime
-                        if current > meta.get("last_seen_mtime", 0):
+                        baseline = meta.get("last_seen_mtime", 0) or meta.get("last_read_mtime", 0)
+                        if current > baseline:
                             logger.info("Source changed: %s", path.name)
                             self.mem.transcript.append(
                                 role="system",

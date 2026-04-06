@@ -32,6 +32,9 @@ class _ProviderConfig:
         self.temperature = config.get("temperature", 0.3)
         self.min_interval = config.get("min_interval", DEFAULT_MIN_INTERVAL)
         self.json_mode_supported = config.get("json_mode_supported", True)
+        # Ignore shell-level proxy env vars by default so a broken desktop/app
+        # proxy does not make every provider appear unreachable.
+        self.trust_env = config.get("trust_env", False)
 
 
 class LLMClient:
@@ -239,7 +242,9 @@ class LLMClient:
 
         logger.debug("POST %s/chat/completions  model=%s  msgs=%d",
                       prov.base_url, prov.model, len(msgs))
-        resp = requests.post(
+        session = requests.Session()
+        session.trust_env = prov.trust_env
+        resp = session.post(
             f"{prov.base_url}/chat/completions",
             headers=headers,
             json=payload,
@@ -268,7 +273,9 @@ class LLMClient:
             payload["system"] = system
 
         logger.debug("POST anthropic  model=%s  msgs=%d", prov.model, len(messages))
-        resp = requests.post(
+        session = requests.Session()
+        session.trust_env = prov.trust_env
+        resp = session.post(
             "https://api.anthropic.com/v1/messages",
             headers=headers,
             json=payload,
